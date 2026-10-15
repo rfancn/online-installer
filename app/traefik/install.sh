@@ -1,19 +1,13 @@
 #!/bin/bash
 
-# 1. 引入公共库并自动计算服务名
+# 1. 引入公共库并初始化（load_common 内部完成：定位项目根、读取/指定服务根目录、创建 Docker 网络）
 # 使用标准的 $0 获取当前脚本的真实绝对路径
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
 COMMON_SCRIPT="${SCRIPT_PATH}/../../script/common.sh"
 
-# 检查公共库是否存在
-if [ ! -f "$COMMON_SCRIPT" ]; then
-    printf "❌ 致命错误: 找不到公共库 %s\n" "$COMMON_SCRIPT"
-    exit 1
-fi
-
-# 引入公共库
+[ -f "$COMMON_SCRIPT" ] || { printf "❌ 致命错误: 找不到公共库 %s\n" "$COMMON_SCRIPT"; exit 1; }
 . "$COMMON_SCRIPT"
-load_common
+load_common || exit 1
 
 # 读取密码时会关闭终端回显，中断时确保恢复，避免终端留在"盲打"状态
 trap 'stty echo 2>/dev/null' EXIT INT TERM

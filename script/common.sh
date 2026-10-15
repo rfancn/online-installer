@@ -1,9 +1,58 @@
 #!/bin/sh
 # ================= script/common.sh =================
 
-SERVICE_BASE="/root/service"
 # 定义全局共享网络名称
 TRAEFIK_NETWORK="web"
+
+# 本库位于 <项目根>/script/ 下，据此定位配置文件（被 source 时用 BASH_SOURCE 取自身路径）
+COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE:-$0}")" && pwd)"
+PROJECT_ROOT="$(cd "${COMMON_DIR}/.." && pwd)"
+INSTALLER_CONF="${PROJECT_ROOT}/.installer.conf"
+
+# 0. 解析服务根目录：首次运行交互确认并写入 .installer.conf，后续自动复用
+resolve_service_base() {
+    # 已有记录则直接复用，不再询问
+    if [ -f "$INSTALLER_CONF" ]; then
+        . "$INSTALLER_CONF"
+        if [ -n "$SERVICE_BASE" ]; then
+            printf "✅ 使用已记录的服务根目录: %s\n" "$SERVICE_BASE"
+            return 0
+        fi
+    fi
+
+    # 首次运行：交互输入，默认当前 home 下的 service 目录
+    default_base="${HOME:-/root}/service"
+    while true; do
+        printf "请输入服务根目录 [%s]: " "$default_base"
+        read -r input_base
+        input_base=${input_base:-$default_base}
+
+        case "$input_base" in
+            /*) break ;;
+            *)  printf "❌ 服务根目录必须是以 / 开头的绝对路径，请重新输入。\n" ;;
+        esac
+    done
+
+    # 提前验证可创建，避免装完才发现权限问题
+    if ! mkdir -p "$input_base" 2>/dev/null; then
+        printf "❌ 无法创建服务根目录 '%s'，请检查权限后重试。\n" "$input_base"
+        return 1
+    fi
+
+    # 写入配置文件，供后续运行复用
+    {
+        printf "# online-installer 服务根目录配置（首次运行 install.sh 时生成）\n"
+        printf "# 修改或删除本文件可重新指定服务根目录\n"
+        printf "SERVICE_BASE=%s\n" "$input_base"
+    } > "$INSTALLER_CONF" || {
+        printf "❌ 无法写入配置文件 '%s'。\n" "$INSTALLER_CONF"
+        return 1
+    }
+
+    SERVICE_BASE="$input_base"
+    printf "✅ 服务根目录已记录到 %s，后续运行将自动复用。\n" "$INSTALLER_CONF"
+    return 0
+}
 
 # 1. 加载公共库的快捷函数
 load_common() {
@@ -12,6 +61,9 @@ load_common() {
 
     # 自动获取上级目录名作为默认安装名
     INSTALL_NAME=$(basename "$(cd "$SCRIPT_DIR" && pwd)")
+
+    # 确定服务根目录（首次交互指定，之后从配置文件复用）
+    resolve_service_base || return 1
 
     # 在加载公共库时，自动调用网络初始化函数
     init_docker_network || return 1
