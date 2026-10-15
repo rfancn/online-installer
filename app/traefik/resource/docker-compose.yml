@@ -1,0 +1,23 @@
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik
+    restart: always
+    networks:
+      - web
+    ports:
+      - "80:80"     # HTTP 端口（自动重定向到 HTTPS，同时用于 ACME 挑战）
+      - "443:443"   # HTTPS 端口
+    env_file:
+      - .env        # DNS 服务商 API 凭据，lego 通过环境变量读取
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro          # 监听 Docker 事件
+      - ./traefik.toml:/etc/traefik/traefik.toml:ro           # 静态主配置（含 ACME 解析器）
+      - ./config:/etc/traefik/dynamic:ro                      # 动态配置目录（dashboard 路由）
+      - ./letsencrypt:/letsencrypt                            # ACME 证书存储（必须持久化）
+    command:
+      - "--configFile=/etc/traefik/traefik.toml"
+
+networks:
+  web:
+    external: true

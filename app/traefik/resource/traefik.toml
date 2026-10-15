@@ -1,0 +1,46 @@
+# ============================================================
+# Traefik 静态配置
+#
+# certificatesResolvers 属于「静态配置」，不能放进 file provider 的
+# 动态配置目录，因此统一写在本文件，由 --configFile 加载。
+# 占位符 __XXX__ 由 install.sh 替换。
+# ============================================================
+
+[log]
+  level = "INFO"
+
+[api]
+  dashboard = true      # 开启 Dashboard 功能
+  insecure = false      # 关闭不安全的默认访问
+
+# --- 入口点 (EntryPoints) ---
+[entryPoints.web]
+  address = ":80"
+
+  [entryPoints.web.http.redirections.entryPoint]
+    to = "websecure"
+    scheme = "https"
+
+[entryPoints.websecure]
+  address = ":443"
+
+# --- 提供者 (Providers) ---
+[providers.docker]
+  exposedByDefault = false   # 默认不暴露容器，仅暴露带 labels 的容器
+
+[providers.file]
+  directory = "/etc/traefik/dynamic"   # 动态配置目录（dashboard 路由等）
+  watch = true
+
+# --- Let's Encrypt 证书解析器 ---
+[certificatesResolvers.letsencrypt.acme]
+  email = "__ACME_EMAIL__"             # 证书到期/异常提醒邮箱
+  storage = "/letsencrypt/acme.json"   # 证书存储文件（必须持久化，权限 600）
+  caServer = "__ACME_CA_SERVER__"      # 生产或 staging 的 ACME 目录地址
+  keyType = "EC256"                    # EC256 比默认 RSA4096 更小、握手更快
+
+  # 泛域名证书只能通过 DNS-01 验证，凭据经 .env 注入（见各厂商环境变量）
+  [certificatesResolvers.letsencrypt.acme.dnsChallenge]
+    provider = "__ACME_DNS_PROVIDER__"
+    delayBeforeCheck = 30              # 等 DNS 记录传播，传播慢可适当调大
+    resolvers = ["223.5.5.5:53", "1.1.1.1:53"]

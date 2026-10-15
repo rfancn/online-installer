@@ -1,0 +1,23 @@
+# dashboard.toml —— Traefik 动态配置（由 file provider 加载）
+# 占位符 __XXX__ 由 install.sh 替换
+
+# 定义 HTTP 路由规则
+[http.routers.dashboard]
+  rule = "Host(`__DASH_BOARD_DOMAIN__`) && (PathPrefix(`/dashboard`) || PathPrefix(`/api`))"
+  entryPoints = ["websecure"]
+  service = "api@internal"
+  middlewares = ["traefik-dashboard-auth"]
+
+# 启用 TLS：交由 letsencrypt 解析器申请证书
+# 泛域名必须挂在某个 router 的 domains 上，Traefik 才会真正去申请
+[http.routers.dashboard.tls]
+  certResolver = "letsencrypt"
+  [[http.routers.dashboard.tls.domains]]
+    main = "__ACME_MAIN_DOMAIN__"
+    sans = ["__ACME_SANS_DOMAIN__"]
+
+# 定义 Basic Auth 中间件
+[http.middlewares.traefik-dashboard-auth.basicAuth]
+  users = [
+    "__DASH_BOARD_CREDENTIAL__"
+  ]
