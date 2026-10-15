@@ -72,22 +72,38 @@ load_common() {
 
 # 1. 初始化 Docker 全局网络的函数
 init_docker_network() {
-    # 使用 docker network inspect 检查网络是否存在
-    if ! docker network inspect "$TRAEFIK_NETWORK" >/dev/null 2>&1; then
-        printf "⚠️  未检测到 Docker 网络 '%s'，正在自动创建...\n" "$TRAEFIK_NETWORK"
-        docker network create "$TRAEFIK_NETWORK" >/dev/null 2>&1
-
-        # 检查创建命令是否执行成功
-        if [ $? -eq 0 ]; then
-            printf "✅ 网络 '%s' 创建成功！\n" "$TRAEFIK_NETWORK"
-        else
-            printf "❌ 网络 '%s' 创建失败，请检查 Docker 服务状态！\n" "$TRAEFIK_NETWORK"
-            return 1
-        fi
-    else
-        printf "✅ 检测到 Docker 网络 '%s' 已存在。\n" "$TRAEFIK_NETWORK"
+    # 先确认 docker 命令存在，避免把"未安装"误报成"网络创建失败"
+    if ! command -v docker >/dev/null 2>&1; then
+        printf "❌ 未找到 docker 命令，请先在本机安装 Docker。\n"
+        return 1
     fi
-    return 0
+
+    # 用 inspect 检查网络是否存在；失败原因需区分：
+    # "网络不存在"（正常，继续创建）/"连不上 daemon"/"无 socket 权限"（均应直接报错退出）
+    if inspect_err=$(docker network inspect "$TRAEFIK_NETWORK" 2>&1); then
+        printf "✅ 检测到 Docker 网络 '%s' 已存在。\n" "$TRAEFIK_NETWORK"
+        return 0
+    fi
+    case "$inspect_err" in
+        *"Cannot connect to the Docker daemon"*)
+            printf "❌ 无法连接 Docker 守护进程，请先启动服务（systemctl start docker）：\n%s\n" "$inspect_err"
+            return 1
+            ;;
+        *"permission denied"*)
+            printf "❌ 无权访问 Docker socket，请将用户加入 docker 组或改用 sudo：\n%s\n" "$inspect_err"
+            return 1
+            ;;
+    esac
+
+    # 走到这里说明 daemon 可达、仅网络不存在，执行创建并保留真实报错
+    printf "⚠️  未检测到 Docker 网络 '%s'，正在自动创建...\n" "$TRAEFIK_NETWORK"
+    if create_err=$(docker network create "$TRAEFIK_NETWORK" 2>&1); then
+        printf "✅ 网络 '%s' 创建成功！\n" "$TRAEFIK_NETWORK"
+        return 0
+    else
+        printf "❌ 网络 '%s' 创建失败，Docker 返回：\n%s\n" "$TRAEFIK_NETWORK" "$create_err"
+        return 1
+    fi
 }
 
 # 2. 初始化服务目录的函数（支持用户确认或自定义服务名）
