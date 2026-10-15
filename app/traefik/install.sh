@@ -86,8 +86,8 @@ printf "==========================================\n"
 printf "☁️  请选择 DNS 服务商\n"
 printf "==========================================\n"
 printf "  1) 阿里云 AliDNS     (alidns)\n"
-printf "  2) Cloudflare        (cloudflare)\n"
-printf "  3) 腾讯云 DNSPod     (tencentcloud)\n"
+printf "  2) 腾讯云 DNSPod     (tencentcloud)\n"
+printf "  3) Cloudflare        (cloudflare)\n"
 printf "请输入序号 (1/2/3) [1]: "
 read -r DNS_CHOICE
 
@@ -105,16 +105,6 @@ case "${DNS_CHOICE:-1}" in
         DNS_ENV_VALUES=("$DNS_KEY_ID" "$DNS_KEY_SECRET")
         ;;
     2)
-        DNS_PROVIDER="cloudflare"
-        printf "\n请输入 Cloudflare API Token (需 Zone:DNS 编辑权限，输入时不可见): "
-        stty -echo
-        read -r DNS_API_TOKEN
-        stty echo
-        printf "\n"
-        DNS_ENV_NAMES=("CF_DNS_API_TOKEN")
-        DNS_ENV_VALUES=("$DNS_API_TOKEN")
-        ;;
-    3)
         DNS_PROVIDER="tencentcloud"
         printf "\n请输入腾讯云 SecretId: "
         read -r DNS_KEY_ID
@@ -125,6 +115,16 @@ case "${DNS_CHOICE:-1}" in
         printf "\n"
         DNS_ENV_NAMES=("TENCENTCLOUD_SECRET_ID" "TENCENTCLOUD_SECRET_KEY")
         DNS_ENV_VALUES=("$DNS_KEY_ID" "$DNS_KEY_SECRET")
+        ;;
+    3)
+        DNS_PROVIDER="cloudflare"
+        printf "\n请输入 Cloudflare API Token (需 Zone:DNS 编辑权限，输入时不可见): "
+        stty -echo
+        read -r DNS_API_TOKEN
+        stty echo
+        printf "\n"
+        DNS_ENV_NAMES=("CF_DNS_API_TOKEN")
+        DNS_ENV_VALUES=("$DNS_API_TOKEN")
         ;;
     *)
         printf "❌ 无效输入 '%s'，仅支持 1/2/3。\n" "$DNS_CHOICE"
