@@ -3,6 +3,9 @@
 # 1. 引入公共库并初始化（load_common 内部完成：定位项目根、读取/指定服务根目录、创建 Docker 网络）
 # 使用标准的 $0 获取当前脚本的真实绝对路径
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
+# 统一入口 install.sh 可能从任意目录调起；切到脚本所在目录，
+# 使 resource/ 等相对路径在任何 cwd 下都有效
+cd "$SCRIPT_PATH" || exit 1
 COMMON_SCRIPT="${SCRIPT_PATH}/../../script/common.sh"
 
 [ -f "$COMMON_SCRIPT" ] || { printf "❌ 致命错误: 找不到公共库 %s\n" "$COMMON_SCRIPT"; exit 1; }

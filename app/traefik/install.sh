@@ -3,6 +3,9 @@
 # 1. 引入公共库并初始化（load_common 内部完成：定位项目根、读取/指定服务根目录、创建 Docker 网络）
 # 使用标准的 $0 获取当前脚本的真实绝对路径
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
+# 统一入口 install.sh 可能从任意目录调起；切到脚本所在目录，
+# 使 resource/ 等相对路径在任何 cwd 下都有效
+cd "$SCRIPT_PATH" || exit 1
 COMMON_SCRIPT="${SCRIPT_PATH}/../../script/common.sh"
 
 [ -f "$COMMON_SCRIPT" ] || { printf "❌ 致命错误: 找不到公共库 %s\n" "$COMMON_SCRIPT"; exit 1; }
@@ -186,11 +189,13 @@ printf "请输入 Dashboard 访问域名 [traefik.%s]: " "$ROOT_DOMAIN"
 read -r DASHBOARD_DOMAIN
 DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN:-traefik.${ROOT_DOMAIN}}
 
-# 检查 htpasswd 工具是否安装
-if ! command -v htpasswd >/dev/null 2>&1; then
-    printf "⚠️  未检测到 htpasswd 工具，正在尝试安装 apache2-utils...\n"
-    sudo apt update && sudo apt install -y apache2-utils
-fi
+# 确保 htpasswd 可用（缺失时经包管理器自动安装，覆盖主流发行版）；
+# 安装失败必须中止，否则空哈希会静默写进 dashboard 认证配置
+ensure_htpasswd || {
+    printf "❌ htpasswd 不可用且自动安装失败，请手动安装后重试\n"
+    printf "   （Debian/Ubuntu: apache2-utils | RHEL/CentOS/Fedora: httpd-tools | Alpine/openSUSE: apache2-utils | Arch: apache2）\n"
+    exit 1
+}
 
 printf "请输入管理员用户名: "
 read -r DASHBOARD_USER

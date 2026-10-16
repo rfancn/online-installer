@@ -54,6 +54,23 @@ resolve_service_base() {
     return 0
 }
 
+# 0.5 检测包管理器（load_common 初始化时确定）：
+#     PKG_MANAGER = apt|dnf|yum|apk|zypper|pacman，未识别时为空
+#     PKG_RUN     = 提权前缀（root 下为空，否则 sudo）
+detect_pkg_manager() {
+    PKG_RUN=""
+    [ "$(id -u)" -ne 0 ] && PKG_RUN="sudo"
+
+    if command -v apt-get >/dev/null 2>&1; then   PKG_MANAGER="apt"
+    elif command -v dnf >/dev/null 2>&1; then     PKG_MANAGER="dnf"
+    elif command -v yum >/dev/null 2>&1; then     PKG_MANAGER="yum"
+    elif command -v apk >/dev/null 2>&1; then     PKG_MANAGER="apk"
+    elif command -v zypper >/dev/null 2>&1; then  PKG_MANAGER="zypper"
+    elif command -v pacman >/dev/null 2>&1; then  PKG_MANAGER="pacman"
+    else                                          PKG_MANAGER=""
+    fi
+}
+
 # 1. 加载公共库的快捷函数
 load_common() {
     # 使用标准的 $0 获取脚本路径
@@ -61,6 +78,9 @@ load_common() {
 
     # 自动获取上级目录名作为默认安装名
     INSTALL_NAME=$(basename "$(cd "$SCRIPT_DIR" && pwd)")
+
+    # 检测本机包管理器，供后续依赖安装使用
+    detect_pkg_manager
 
     # 确定服务根目录（首次交互指定，之后从配置文件复用）
     resolve_service_base || return 1
@@ -168,4 +188,43 @@ init_service() {
 # 用法: sed -i "s|__PLACEHOLDER__|$(sed_escape "$VALUE")|g" 文件
 sed_escape() {
     printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+# 4. 通用软件包安装原语（依赖 load_common 检测出的 PKG_MANAGER/PKG_RUN）
+#    用法: pkg_install <包名>
+pkg_install() {
+    if [ -z "$PKG_MANAGER" ]; then
+        printf "❌ 未识别的包管理器，无法自动安装 '%s'。\n" "$1"
+        return 1
+    fi
+
+    case "$PKG_MANAGER" in
+        apt)    $PKG_RUN apt-get update -qq && $PKG_RUN apt-get install -y "$1" ;;
+        dnf)    $PKG_RUN dnf install -y "$1" ;;
+        yum)    $PKG_RUN yum install -y "$1" ;;
+        apk)    $PKG_RUN apk add --no-cache "$1" ;;
+        zypper) $PKG_RUN zypper --non-interactive install "$1" ;;
+        pacman) $PKG_RUN pacman -Sy --noconfirm "$1" ;;
+    esac
+}
+
+# 5. 确保 htpasswd 可用：缺失时按发行版映射包名后调用 pkg_install，
+#    安装后复检；返回非 0 表示仍不可用，调用方须中止
+ensure_htpasswd() {
+    command -v htpasswd >/dev/null 2>&1 && return 0
+
+    local pkg
+    case "$PKG_MANAGER" in
+        apt|apk|zypper) pkg="apache2-utils" ;;  # Debian/Ubuntu、Alpine、openSUSE
+        dnf|yum)        pkg="httpd-tools" ;;    # Fedora/RHEL/Rocky/Alma、旧 CentOS
+        pacman)         pkg="apache2" ;;        # Arch
+        *)              pkg="" ;;
+    esac
+    if [ -z "$pkg" ]; then
+        printf "❌ 未识别的包管理器，无法自动安装 htpasswd，请手动安装。\n"
+        return 1
+    fi
+
+    printf "⚠️  未检测到 htpasswd，正在通过 %s 安装 %s...\n" "$PKG_MANAGER" "$pkg"
+    pkg_install "$pkg" && command -v htpasswd >/dev/null 2>&1
 }
