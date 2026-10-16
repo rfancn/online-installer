@@ -198,8 +198,22 @@ pkg_install() {
         return 1
     fi
 
+    # 非 root 时先显式获取提权凭证：这里就是输入管理员密码的提示点
+    # （sudo -v 会在 tty 上提示密码；不在 sudoers 会当场明确失败，
+    #   不会带着未认证状态继续调用包管理器）
+    if [ -n "$PKG_RUN" ]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            printf "❌ 当前非 root 且系统没有 sudo，无法安装 '%s'，请切换到 root 或安装 sudo。\n" "$1"
+            return 1
+        fi
+        if ! sudo -v; then
+            printf "❌ sudo 认证失败（用户可能不在 sudoers 中或取消了输入），无法安装 '%s'。\n" "$1"
+            return 1
+        fi
+    fi
+
     case "$PKG_MANAGER" in
-        apt)    $PKG_RUN apt-get update -qq && $PKG_RUN apt-get install -y "$1" ;;
+        apt)    $PKG_RUN apt-get update && $PKG_RUN apt-get install -y "$1" ;;
         dnf)    $PKG_RUN dnf install -y "$1" ;;
         yum)    $PKG_RUN yum install -y "$1" ;;
         apk)    $PKG_RUN apk add --no-cache "$1" ;;
