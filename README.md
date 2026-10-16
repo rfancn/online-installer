@@ -26,7 +26,7 @@ ACME 统一走 **DNS-01**，resolver 池只包含 DNS resolver。两层职责分
 
 - **resolver 池（静态）**：traefik 安装时收集 ACME 邮箱与 CA 环境，并**可选**
   立即配置 DNS resolver（也可跳过，之后补配）。resolver 以
-  **`根域名@提供商`** 命名（如 `sysummit.com@aliyun`），每个"根域名+提供商"
+  **`根域名@提供商`** 命名（如 `example.com@aliyun`），每个"根域名+提供商"
   一个，独立证书存储 `letsencrypt/acme-<resolver>.json`（官方禁止共用）。
   Dashboard 配置时会**绑定一个 resolver** 签发其域名证书（可选择跳过=自签兜底）。
   新增 resolver 途径：

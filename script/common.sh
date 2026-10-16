@@ -231,7 +231,7 @@ sed_escape() {
 }
 
 # 3.5 ACME resolver 池与域名的全局管理（纯 DNS-01）：
-#     resolver 命名 = <根域名>@<提供商别名>，如 sysummit.com@aliyun；
+#     resolver 命名 = <根域名>@<提供商别名>，如 example.com@aliyun；
 #     静态段存于 traefik.toml（TOML 引号键），根域名池存 .installer.conf
 
 # lego 提供商标识 → 别名（用于 resolver 命名，贴近用户习惯）
@@ -403,7 +403,7 @@ EOF
 add_dns_resolver() {
     local root="${1:-}" name entry
     if [ -z "$root" ]; then
-        printf "请输入该 resolver 关联的根域名（如 sysummit.com）: "
+        printf "请输入该 resolver 关联的根域名（如 example.com）: "
         read -r root || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
         validate_root_domain "$root" || return 1
     fi

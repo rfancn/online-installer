@@ -2,7 +2,7 @@
 
 # ================= app/traefik/configure.sh =================
 # traefik 运维脚本：向 ACME resolver 池新增一个 DNS resolver
-# （命名 <根域名>@<提供商>，如 sysummit.com@aliyun；业务应用安装时可复用同一流程）。
+# （命名 <根域名>@<提供商>，如 example.com@aliyun；业务应用安装时可复用同一流程）。
 # 入口：bash run.sh configure traefik
 
 # 使用标准的 $0 获取当前脚本的真实绝对路径
