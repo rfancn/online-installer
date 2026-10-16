@@ -99,6 +99,27 @@ if [ "$MODE" = reinstall ]; then
 fi
 
 
+# ---------- 5b. 可选：配置 DNS resolver 池（追加进已安装的 traefik.toml/.env） ----------
+printf "==========================================\n"
+printf "🔐 是否现在配置 DNS resolver（Let's Encrypt DNS-01 凭据池）\n"
+printf "==========================================\n"
+printf "（可跳过：之后经 bash run.sh configure traefik 或业务应用安装时新增）\n"
+printf "现在添加？(y/n) [y]: "
+read -r add_choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
+case "${add_choice:-y}" in
+    y|Y)
+        while true; do
+            add_dns_resolver || exit 1
+            printf "继续添加其他 resolver？(y/n) [n]: "
+            read -r again || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
+            case "${again:-n}" in
+                y|Y) continue ;;
+                *) break ;;
+            esac
+        done
+        ;;
+esac
+
 # ---------- 6. 配置 Dashboard 域名与访问凭证 ----------
 default_dash=""
 # shellcheck disable=SC2206
@@ -120,6 +141,10 @@ while true; do
     fi
     validate_root_domain "$DASHBOARD_DOMAIN" && break
 done
+
+# Dashboard 证书需绑定 resolver：从池选择/新增，或跳过（自签兜底）
+choose_or_add_resolver "" allow_skip || exit 1
+DASH_RESOLVER="$APP_RESOLVER"
 
 # 确保 htpasswd 可用（缺失时经包管理器自动安装，覆盖主流发行版）；
 # 安装失败必须中止，否则空哈希会静默写进 dashboard 认证配置
@@ -148,7 +173,14 @@ HASH=$(htpasswd -nbB "$DASHBOARD_USER" "$DASHBOARD_PASS" | cut -d ":" -f 2)
 DASHBOARD_CONFIG_FILE="${CONFIG_DIR}/dashboard.toml"
 sed -i "s|__DASH_BOARD_DOMAIN__|$(sed_escape "$DASHBOARD_DOMAIN")|g" "$DASHBOARD_CONFIG_FILE"
 sed -i "s|__DASH_BOARD_CREDENTIAL__|$(sed_escape "${DASHBOARD_USER}:${HASH}")|g" "$DASHBOARD_CONFIG_FILE"
-printf "✅ Traefik Dashboard 认证配置已写入！\n"
+# Dashboard resolver 绑定：选中则替换占位符，跳过则删除整行（回退自签证书）
+if [ -n "$DASH_RESOLVER" ]; then
+    sed -i "s|__DASH_RESOLVER__|$(sed_escape "$DASH_RESOLVER")|g" "$DASHBOARD_CONFIG_FILE"
+    printf "✅ Traefik Dashboard 认证配置已写入（证书 resolver: %s）！\n" "$DASH_RESOLVER"
+else
+    sed -i '/certResolver = "__DASH_RESOLVER__"/d' "$DASHBOARD_CONFIG_FILE"
+    printf "✅ Traefik Dashboard 认证配置已写入（未绑定 resolver，暂用自签证书）！\n"
+fi
 
 
 # ---------- 8. 持久化 + 防火墙 + 收尾 ----------
@@ -158,12 +190,15 @@ open_firewall_ports 80/tcp 443/tcp
 
 printf -- "----------------------------------------\n"
 printf "Dashboard:  https://%s/dashboard/\n" "$DASHBOARD_DOMAIN"
-printf "resolver:   DNS 池当前为空，应用安装时引导新增，或执行 bash run.sh configure traefik\n"
+if [ -n "$DASH_RESOLVER" ]; then
+    printf "Dashboard 证书: resolver %s\n" "$DASH_RESOLVER"
+else
+    printf "Dashboard 证书: 未绑定 resolver（自签兜底），可重跑本脚本或 configure 补配\n"
+fi
 printf -- "----------------------------------------\n"
 printf "下一步：cd %s && docker compose up -d\n" "$SERVICE_DIR"
-printf "ℹ️  根域名与通配证书无需在此配置：安装业务应用时选择/新增 DNS resolver 并声明域名，\n"
-printf "   签发声明经应用 labels 动态下发（热加载），resolver 池变更才需重启。\n"
-printf "⚠️  池为空期间 Dashboard 使用自签证书，首个 resolver 配置并重启后自动替换。\n"
-printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$DASHBOARD_DOMAIN"
+printf "ℹ️  业务应用安装时选择/新增 DNS resolver 并声明域名，签发经应用 labels\n"
+printf "   动态下发（热加载）；resolver 池变更才需重启。\n"
+printf "⚠️  请确认 %s 的 DNS 记录已指向本机（Dashboard 证书走 DNS-01）。\n" "$DASHBOARD_DOMAIN"
 
 echo "✅ $INSTALL_NAME 安装完成！"

@@ -433,7 +433,7 @@ add_dns_resolver() {
 #       为空 = 精确域名模式，列出全部（须自行确认所选提供商托管该域名 NS）
 # 结果: APP_RESOLVER；实际新增成功时 RESOLVER_ADDED=1（调用方据此提示重启 traefik）
 choose_or_add_resolver() {
-    local wr="${1:-}"
+    local wr="${1:-}" allow_skip="${2:-}"
     printf "==========================================\n"
     if [ -n "$wr" ]; then
         printf "🔐 为根域名 %s 选择证书 resolver（命名: 根域名@提供商）\n" "$wr"
@@ -442,6 +442,8 @@ choose_or_add_resolver() {
     fi
     printf "==========================================\n"
     local i choice entry shown=0
+    # 进入菜单前刷新池：add_dns_resolver 创建新段后池可能是写入前的旧状态
+    list_traefik_resolvers 2>/dev/null || RESOLVER_POOL=()
     while true; do
         i=1
         shown=0
@@ -460,12 +462,24 @@ choose_or_add_resolver() {
         else
             printf "  %d) 新增 resolver（输入根域名与提供商）\n" "$i"
         fi
-        printf "请输入序号 (1-%d) [1]: " "$i"
+        local skip_idx=$((i + 1))
+        if [ -n "$allow_skip" ]; then
+            printf "  %d) 跳过（不绑定 resolver，暂用自签证书兜底）\n" "$skip_idx"
+            printf "请输入序号 (1-%d) [1]: " "$skip_idx"
+        else
+            printf "请输入序号 (1-%d) [1]: " "$i"
+        fi
         read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
         [ -n "$choice" ] || choice=1
         case "$choice" in
             *[!0-9]*) printf "❌ 无效输入，请输入数字序号。\n"; continue ;;
         esac
+        if [ -n "$allow_skip" ] && [ "$choice" -eq "$skip_idx" ]; then
+            APP_RESOLVER=""
+            RESOLVER_ADDED=0
+            printf "⏭️  已跳过 resolver 绑定。\n"
+            return 0
+        fi
         if [ "$choice" -ge 1 ] && [ "$choice" -lt "$i" ]; then
             # 定位第 choice 个「已显示」条目（与过滤逻辑一致地重新数一遍）
             local n=0
