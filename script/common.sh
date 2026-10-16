@@ -137,6 +137,13 @@ open_firewall_ports() {
             pkg_exec ufw allow "$port" || printf "⚠️  ufw 放行 '%s' 失败，请手动处理。\n" "$port"
         done
     elif command -v firewall-cmd >/dev/null 2>&1; then
+        # firewalld 守护进程未运行时，主机层本就不拦流量，直接跳过；
+        # 不主动 start firewalld——启用防火墙可能当场中断既有连接，留给用户决定
+        if ! firewall-cmd --state >/dev/null 2>&1; then
+            printf "ℹ️  firewalld 服务未运行，无主机防火墙拦截，跳过端口放行（云主机请确认安全组）。\n"
+            return 0
+        fi
+
         for port in "$@"; do
             fw_args="$fw_args --add-port=$port"
         done
@@ -227,9 +234,9 @@ pkg_exec() {
             PKG_ELEV="sudo"
         elif command -v su >/dev/null 2>&1; then
             printf "🔑 sudo 不可用（未安装、不在 sudoers 或认证失败），改用 su 提权\n"
-            # 交互式指定管理员账户（回车默认 root；root 锁定时可输入其他管理员账户）
+            # 交互式指定系统管理员账户（回车默认 root；root 锁定时可输入其他管理员账户）
             # 在探测阶段读一次并缓存，避免 apt update+install 链重复询问
-            printf "请输入管理员账户名 [root]: "
+            printf "请输入系统管理员账户名（用于安装软件包提权，非应用账号） [root]: "
             read -r PKG_SU_ADMIN
             PKG_SU_ADMIN=${PKG_SU_ADMIN:-root}
             PKG_ELEV="su"

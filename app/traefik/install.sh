@@ -197,10 +197,12 @@ ensure_htpasswd || {
     exit 1
 }
 
-printf "请输入管理员用户名: "
+# 注意：这里的用户名/密码是 Traefik Dashboard 网页的登录凭证，
+# 与安装提权用的系统管理员账户无关
+printf "请输入 Dashboard 登录用户名（仅用于登录 Traefik Dashboard 网页，非系统管理员）: "
 read -r DASHBOARD_USER
 
-printf "请输入管理员密码 (输入时不可见): "
+printf "请输入 Dashboard 登录密码 (输入时不可见): "
 stty -echo  # 隐藏密码输入
 read -r DASHBOARD_PASS
 stty echo   # 恢复显示
