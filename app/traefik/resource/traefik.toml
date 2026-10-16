@@ -24,6 +24,21 @@
 [entryPoints.websecure]
   address = ":443"
 
+  # --- 大文件上传支持（对应原 nginx 代理调优的取舍结果） ---
+  # readTimeout 默认 60s，语义是「读取完整请求（含 body）的最长时间」，
+  # 大文件慢上传必然在 60s 被掐断 → 必须显式解除（0 = 不限制，
+  # 等价 nginx proxy_request_buffering off + proxy_read_timeout 3000s 的意图）。
+  # 其余 nginx 调优均为 Traefik 内建行为/默认值，无需配置：
+  #   proxy_set_header Host/X-Forwarded-For/X-Forwarded-Proto → 默认透传 Host、
+  #     自动追加 XFF 与 XFP；X-Real-IP 为 nginx 惯例，应用统一读 XFF
+  #   proxy_connect_timeout 30s / proxy_send_timeout 60s → dialTimeout 默认 30s、
+  #     writeTimeout 默认不限制
+  #   proxy_request_buffering/proxy_buffering off → 请求与响应默认流式转发不缓冲
+  #   proxy_http_version 1.1 + Connection "" → 上游固定 HTTP/1.1 且内建连接池复用
+  #   client_max_body_size 1024m → 默认对 body 大小无任何限制
+  [entryPoints.websecure.transport.respondingTimeouts]
+    readTimeout = "0s"
+
 # --- 提供者 (Providers) ---
 [providers.docker]
   exposedByDefault = false   # 默认不暴露容器，仅暴露带 labels 的容器
