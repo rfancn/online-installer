@@ -120,31 +120,36 @@ case "${add_choice:-y}" in
         ;;
 esac
 
-# ---------- 6. 配置 Dashboard 域名与访问凭证 ----------
-default_dash=""
-# shellcheck disable=SC2206
-[ -n "$ROOT_DOMAINS" ] && default_dash="traefik.$(printf '%s' "${ROOT_DOMAINS%% *}")"
+# ---------- 6. 配置 Dashboard：先定证书 resolver，再推导访问域名 ----------
+# Dashboard 证书需绑定 resolver：从池选择/新增，或跳过（自签兜底）
 printf "==========================================\n"
 printf "🔐 请配置 Traefik Dashboard\n"
 printf "==========================================\n"
+choose_or_add_resolver "" allow_skip || exit 1
+DASH_RESOLVER="$APP_RESOLVER"
+
+# 默认访问域名推导：优先所选 resolver 的所属根域名（名字 @ 前段），
+# 其次根域名池第一项；均无则需手动输入
+default_dash=""
+if [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == *@* ]]; then
+    default_dash="traefik.${DASH_RESOLVER%@*}"
+elif [ -n "$ROOT_DOMAINS" ]; then
+    default_dash="traefik.${ROOT_DOMAINS%% *}"
+fi
 while true; do
     if [ -n "$default_dash" ]; then
-        printf "请输入 Dashboard 访问域名 [%s]: " "$default_dash"
+        printf "请输入 Dashboard 访问域名（回车用默认）[%s]: " "$default_dash"
     else
         printf "请输入 Dashboard 访问域名（如 traefik.example.com）: "
     fi
     read -r DASHBOARD_DOMAIN || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
     DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN:-$default_dash}
     if [ -z "$DASHBOARD_DOMAIN" ]; then
-        printf "❌ 无根域名池时 Dashboard 域名不能为空。\n"
+        printf "❌ 无根域名可推导时 Dashboard 域名不能为空。\n"
         continue
     fi
     validate_root_domain "$DASHBOARD_DOMAIN" && break
 done
-
-# Dashboard 证书需绑定 resolver：从池选择/新增，或跳过（自签兜底）
-choose_or_add_resolver "" allow_skip || exit 1
-DASH_RESOLVER="$APP_RESOLVER"
 
 # 确保 htpasswd 可用（缺失时经包管理器自动安装，覆盖主流发行版）；
 # 安装失败必须中止，否则空哈希会静默写进 dashboard 认证配置

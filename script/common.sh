@@ -424,6 +424,10 @@ add_dns_resolver() {
     collect_acme_meta || return 1
     create_resolver "$root" || return 1
     RESOLVER_ADDED=1
+    # 根域名登记进全局池：供 Dashboard 默认域名推导与应用安装时选择复用
+    local rd seen=""
+    for rd in $ROOT_DOMAINS; do [ "$rd" = "$root" ] && seen=1; done
+    [ -n "$seen" ] || save_global_root_domains $ROOT_DOMAINS "$root" || return 1
     printf "✅ 已新增 resolver %s（根域名 %s，provider: %s）\n" "$APP_RESOLVER" "$root" "$DNS_PROVIDER"
     return 0
 }
