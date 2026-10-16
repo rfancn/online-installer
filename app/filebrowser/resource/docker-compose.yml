@@ -1,0 +1,32 @@
+services:
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+    restart: always
+    # 与原 docker run --user 0:0 一致：以 root 运行，保证可读写挂载目录
+    user: "0:0"
+    volumes:
+      # 文件根目录：settings.json 的 "root": "data" 按容器根路径解析为 /data
+      - ./data:/data
+      # settings.json 配置目录
+      - ./config:/config
+      # sqlite 数据库：settings.json 的 "database" 解析为 /database/filebrowser.db
+      - ./database:/database
+      # 日志：settings.json 的 "log" 写容器内 /var/log/filebrowser.log；
+      # 宿主机侧文件必须先存在（install.sh touch），否则 docker 会把挂载点建成目录
+      - ./logs/filebrowser.log:/var/log/filebrowser.log
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.filebrowser.rule=Host(`${FILEBROWSER_HOST}`)"
+      - "traefik.http.routers.filebrowser.entrypoints=websecure"
+      - "traefik.http.routers.filebrowser.tls=true"
+      # 交由 Traefik 的 letsencrypt 解析器签发；域名落在泛域名证书范围内时直接复用
+      - "traefik.http.routers.filebrowser.tls.certResolver=letsencrypt"
+      - "traefik.http.routers.filebrowser.service=filebrowser-svc"
+      - "traefik.http.services.filebrowser-svc.loadbalancer.server.port=80"
+
+networks:
+  web:
+    external: true
