@@ -225,9 +225,8 @@ sed -i "s|__ACME_SANS_DOMAIN__|$(sed_escape "$ROOT_DOMAIN")|g" "$DASHBOARD_CONFI
 printf "✅ Traefik Dashboard 认证配置已写入！\n"
 
 
-# ============ 12. 放行防火墙并收尾 ============
-ufw allow 80/tcp
-ufw allow 443/tcp
+# ============ 12. 放行防火墙并收尾（自动适配 ufw / firewalld） ============
+open_firewall_ports 80/tcp 443/tcp
 
 printf -- "----------------------------------------\n"
 printf "签名域名:   %s（含 %s）\n" "$ROOT_DOMAIN" "$WILDCARD_DOMAIN"

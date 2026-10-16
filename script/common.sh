@@ -127,6 +127,27 @@ init_docker_network() {
     fi
 }
 
+# 1.5 放行防火墙端口：按存在的工具自动适配
+#     ufw（Debian/Ubuntu）/ firewall-cmd（RHEL/Rocky/Fedora 的 firewalld）
+#     两者都无则跳过并提示（可能无防火墙，或安全组在云平台层需自行放行）
+open_firewall_ports() {
+    local port fw_args=""
+    if command -v ufw >/dev/null 2>&1; then
+        for port in "$@"; do
+            pkg_exec ufw allow "$port" || printf "⚠️  ufw 放行 '%s' 失败，请手动处理。\n" "$port"
+        done
+    elif command -v firewall-cmd >/dev/null 2>&1; then
+        for port in "$@"; do
+            fw_args="$fw_args --add-port=$port"
+        done
+        # shellcheck disable=SC2086  # fw_args 为固定的 --add-port= 参数序列，需按空格拆分
+        pkg_exec firewall-cmd --permanent $fw_args && pkg_exec firewall-cmd --reload ||
+            printf "⚠️  firewalld 放行 '%s' 失败，请手动处理。\n" "$*"
+    else
+        printf "⚠️  未检测到 ufw/firewalld，跳过防火墙配置；若有其他防火墙或云平台安全组，请自行放行 %s。\n" "$*"
+    fi
+}
+
 # 2. 初始化服务目录的函数（支持用户确认或自定义服务名）
 init_service() {
     current_name="$INSTALL_NAME"
