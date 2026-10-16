@@ -9,6 +9,12 @@ COMMON_SCRIPT="${SCRIPT_PATH}/../../script/common.sh"
 . "$COMMON_SCRIPT"
 load_common || exit 1
 
+# 读取密码时会关闭终端回显，退出或中断时确保恢复，避免终端留在"盲打"状态
+# 注意：trap 接管信号后默认的中止动作不再执行，handler 必须自行 exit，
+# 否则 Ctrl+C 只会恢复 echo，脚本继续跑、无法中断（INT 惯例退出码 130，TERM 为 143）
+trap 'stty echo 2>/dev/null' EXIT
+trap 'stty echo 2>/dev/null; exit 130' INT
+trap 'stty echo 2>/dev/null; exit 143' TERM
 
 # 2. 执行初始化（直接生成 $INSTALL_DIR 和 $SERVICE_NAME）
 init_service || exit 1
