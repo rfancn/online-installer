@@ -8,13 +8,9 @@
   service = "api@internal"
   middlewares = ["traefik-dashboard-auth"]
 
-# 启用 TLS：交由 letsencrypt 解析器申请证书
-# 泛域名必须挂在某个 router 的 domains 上，Traefik 才会真正去申请
+# 启用 TLS：不显式指定 certResolver，Traefik v3 默认使用第一个已配置的 DNS resolver
+# 自动签发 dashboard 精确域名证书；resolver 池为空时回退自签证书（新增后自动替换）
 [http.routers.dashboard.tls]
-  certResolver = "letsencrypt"
-  [[http.routers.dashboard.tls.domains]]
-    main = "__ACME_MAIN_DOMAIN__"
-    sans = ["__ACME_SANS_DOMAIN__"]
 
 # 定义 Basic Auth 中间件
 [http.middlewares.traefik-dashboard-auth.basicAuth]

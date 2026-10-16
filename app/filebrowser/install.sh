@@ -40,29 +40,13 @@ TARGET_ENV_FILE=$SERVICE_DIR/$ENV_FILE
 cp resource/$ENV_FILE $TARGET_ENV_FILE
 
 
-# 6. 确认访问域名（根域名来自 traefik 全局配置；二级域名默认服务名，需用户确认）
-require_root_domain || exit 1
-while true; do
-    printf "请输入二级域名（完整访问域名为 <二级域名>.%s）[%s]: " "$ROOT_DOMAIN" "$SERVICE_NAME"
-    read -r HOST_LABEL
-    HOST_LABEL=${HOST_LABEL:-$SERVICE_NAME}
-    case "$HOST_LABEL" in
-        ''|*[\"\'\ \`\$\*]*)
-            printf "❌ 二级域名不能为空，且不能包含空格、引号、反引号、\$ 与 *。\n"
-            continue
-            ;;
-    esac
-    APP_HOST="${HOST_LABEL}.${ROOT_DOMAIN}"
-
-    printf "请确认访问域名: https://%s (y/n) [y]: " "$APP_HOST"
-    read -r host_confirm
-    case "${host_confirm:-y}" in
-        y|Y) break ;;
-        n|N) continue ;;
-        *)   printf "❌ 无效输入 '%s'，请输入 y 或 n。\n" "$host_confirm" ;;
-    esac
-done
+# 6. 证书与域名配置（方案 B：resolver 从 traefik 静态池选择或引导新增，
+#    通配/精确域名声明随本应用 labels 动态下发，自动触发签发）
+setup_app_certificate || exit 1
 sed -i "s|__FILEBROWSER_HOST__|$(sed_escape "$APP_HOST")|g" "$TARGET_ENV_FILE"
+sed -i "s|__FILEBROWSER_RESOLVER__|$(sed_escape "$APP_RESOLVER")|g" "$TARGET_ENV_FILE"
+sed -i "s|__FILEBROWSER_CERT_MAIN__|$(sed_escape "$CERT_MAIN")|g" "$TARGET_ENV_FILE"
+sed -i "s|__FILEBROWSER_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
 
 
 # 7. 收尾提示
@@ -72,5 +56,11 @@ printf -- "----------------------------------------\n"
 printf "下一步：cd %s && docker compose up -d\n" "$SERVICE_DIR"
 printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$APP_HOST"
 printf "🔑 首次启动的 admin 随机初始密码见：docker compose logs filebrowser（登录后请立即修改）。\n"
+
+# 新增 resolver 修改的是 traefik 静态配置，必须重启容器才生效
+if [ "${RESOLVER_ADDED:-0}" = 1 ]; then
+    printf "⚠️  本次新增了 resolver（traefik 静态配置已变更），需重启 traefik 生效：\n"
+    printf "   cd %s && docker compose restart\n" "$TRAEFIK_HOME"
+fi
 
 echo "✅ $INSTALL_NAME 安装完成！"

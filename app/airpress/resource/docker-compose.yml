@@ -20,8 +20,13 @@ services:
       - "traefik.http.routers.airpress.rule=Host(`${AIRPRESS_HOST}`)"
       - "traefik.http.routers.airpress.entrypoints=websecure"
       - "traefik.http.routers.airpress.tls=true"
-      # 交由 Traefik 的 letsencrypt 解析器签发；域名落在泛域名证书范围内时直接复用
-      - "traefik.http.routers.airpress.tls.certResolver=letsencrypt"
+      # 证书解析器由 .env 的 AIRPRESS_RESOLVER 提供（traefik resolver 池）
+      - "traefik.http.routers.airpress.tls.certResolver=${AIRPRESS_RESOLVER}"
+      # 通配证书声明：通配域名模式下 main=*.根域名 sans=根域名，本应用启动即触发
+      # 签发（动态配置热加载，无需动 traefik 静态配置）；
+      # 精确域名模式下两项为空，Traefik 按 rule 域名自动签发单域名证书
+      - "traefik.http.routers.airpress.tls.domains[0].main=${AIRPRESS_CERT_MAIN}"
+      - "traefik.http.routers.airpress.tls.domains[0].sans=${AIRPRESS_CERT_SANS}"
       - "traefik.http.routers.airpress.service=airpress-svc"
       - "traefik.http.services.airpress-svc.loadbalancer.server.port=8080"
 

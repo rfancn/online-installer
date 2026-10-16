@@ -20,180 +20,106 @@ trap 'stty echo 2>/dev/null; exit 130' INT
 trap 'stty echo 2>/dev/null; exit 143' TERM
 
 
-# 2. 执行初始化（直接生成 $INSTALL_DIR 和 $SERVICE_NAME）
-init_service || exit 1
+# ---------- 2. 安装模式判定 ----------
+# DNS resolver 的新增统一走 configure.sh（入口: bash run.sh configure traefik），
+# 或由业务应用在需要通配证书时引导新增；本脚本只负责安装/重装 traefik 本体。
+MODE="fresh"
+if [ -n "$TRAEFIK_HOME" ] && [ -f "$TRAEFIK_HOME/traefik.toml" ]; then
+    printf "==========================================\n"
+    printf "🔧 Traefik 已安装于: %s\n" "$TRAEFIK_HOME"
+    if list_traefik_resolvers; then
+        printf "🔐 现有 resolver 池:\n"
+        for entry in "${RESOLVER_POOL[@]}"; do
+            printf "   - %s\n" "$entry"
+        done
+    fi
+    printf "==========================================\n"
+    printf "  1) 完全重装（覆盖配置，保留 letsencrypt 证书存储；\n"
+    printf "     如需新增 DNS resolver 请选取消后执行: bash run.sh configure traefik）\n"
+    printf "  2) 取消\n"
+    printf "请输入序号 (1/2) [2]: "
+    read -r mode_choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
+    case "${mode_choice:-2}" in
+        1) MODE="reinstall" ;;
+        *) printf "已取消。新增 DNS resolver：bash run.sh configure traefik\n"; exit 0 ;;
+    esac
+fi
+
+# ---------- 3. 目标目录确定 ----------
+if [ "$MODE" = reinstall ]; then
+    SERVICE_DIR="$TRAEFIK_HOME"
+    printf "⚠️  将覆盖 %s 下的 traefik.toml/config/.env/docker-compose.yml（letsencrypt 数据保留），继续？(y/n) [n]: " "$SERVICE_DIR"
+    read -r go || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
+    case "$go" in
+        y|Y) printf "开始完全重装...\n" ;;
+        *)   printf "已取消。\n"; exit 0 ;;
+    esac
+    SERVICE_NAME=$(basename "$SERVICE_DIR")
+    # 清理旧声明式路由文件（历史方案遗留；域名声明现随应用 labels 下发）
+    rm -f "$SERVICE_DIR"/config/acme-*.toml
+else
+    init_service || exit 1
+fi
+
+# 立即回填 TRAEFIK_HOME：collect_acme_meta / create_resolver 等按此定位配置文件
+export TRAEFIK_HOME="$SERVICE_DIR"
 
 echo "🚀 开始将服务安装到: $SERVICE_DIR"
 
-
-# ============ 3. 收集根域名（用于签发泛域名证书，保存到全局供各应用复用） ============
-printf "==========================================\n"
-printf "🌐 请配置根域名\n"
-printf "==========================================\n"
-printf "（将签发 *.域名 泛域名证书，证书同时覆盖域名本身）\n"
-while true; do
-    # 全局配置已有根域名（重装/追加场景）时作为默认值
-    saved_hint=""
-    [ -n "$ROOT_DOMAIN" ] && saved_hint="（已配置: ${ROOT_DOMAIN}，回车沿用）"
-    printf "请输入根域名 %s（如 example.com）: " "$saved_hint"
-    read -r input_domain
-    [ -n "$input_domain" ] && ROOT_DOMAIN="$input_domain"
-    case "$ROOT_DOMAIN" in
-        ''|*[\"\'\ \`\$\*]*)
-            printf "❌ 域名不能为空，且不能包含空格、引号、反引号、\$ 与 *。\n"
-            continue
-            ;;
-    esac
-    break
-done
-WILDCARD_DOMAIN="*.${ROOT_DOMAIN}"
-# 持久化到 .installer.conf：业务应用安装时据此推导访问域名，不再询问根域名
-save_global_root_domain || printf "⚠️  根域名保存失败，后续应用安装将无法自动推导域名。\n"
-
-
-# ============ 4. 收集证书通知邮箱 ============
-printf "==========================================\n"
-printf "📧 请配置证书通知邮箱\n"
-printf "==========================================\n"
-printf "（Let's Encrypt 用它发送证书到期与异常提醒）\n"
-while true; do
-    printf "请输入邮箱: "
-    read -r ACME_EMAIL
-    case "$ACME_EMAIL" in
-        '')     printf "❌ 邮箱不能为空。\n"; continue ;;
-        *[\"\'\ \`\$]*) printf "❌ 邮箱不能包含空格、引号、反引号与 \$。\n"; continue ;;
-        *@*)    break ;;
-        *)      printf "❌ 邮箱格式不正确（缺少 @）。\n"; continue ;;
-    esac
-done
-
-
-# ============ 5. 选择 Let's Encrypt 环境 ============
-printf "==========================================\n"
-printf "🧪 请选择 Let's Encrypt 环境\n"
-printf "==========================================\n"
-printf "  1) 生产  (正式证书，浏览器信任，有速率限制)\n"
-printf "  2) 测试  (staging，不受速率限制，浏览器不信任)\n"
-printf "请输入序号 (1/2) [1]: "
-read -r CA_CHOICE
-case "$CA_CHOICE" in
-    2)
-        ACME_CA_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
-        printf "⚠️  已选择测试环境：证书不被浏览器信任，仅用于验证流程。\n"
-        ;;
-    *)
-        ACME_CA_SERVER="https://acme-v02.api.letsencrypt.org/directory"
-        ;;
-esac
-
-
-# ============ 6. 选择 DNS 服务商并收集 API 凭据 ============
-# 泛域名证书只能用 DNS-01 验证，lego 通过环境变量读取各厂商凭据
-printf "==========================================\n"
-printf "☁️  请选择 DNS 服务商\n"
-printf "==========================================\n"
-printf "  1) 阿里云 AliDNS     (alidns)\n"
-printf "  2) 腾讯云 DNSPod     (tencentcloud)\n"
-printf "  3) Cloudflare        (cloudflare)\n"
-printf "请输入序号 (1/2/3) [1]: "
-read -r DNS_CHOICE
-
-case "${DNS_CHOICE:-1}" in
-    1)
-        DNS_PROVIDER="alidns"
-        printf "\n请输入阿里云 AccessKey ID: "
-        read -r DNS_KEY_ID
-        printf "请输入阿里云 AccessKey Secret (输入时不可见): "
-        stty -echo
-        read -r DNS_KEY_SECRET
-        stty echo
-        printf "\n"
-        DNS_ENV_NAMES=("ALICLOUD_ACCESS_KEY" "ALICLOUD_SECRET_KEY")
-        DNS_ENV_VALUES=("$DNS_KEY_ID" "$DNS_KEY_SECRET")
-        ;;
-    2)
-        DNS_PROVIDER="tencentcloud"
-        printf "\n请输入腾讯云 SecretId: "
-        read -r DNS_KEY_ID
-        printf "请输入腾讯云 SecretKey (输入时不可见): "
-        stty -echo
-        read -r DNS_KEY_SECRET
-        stty echo
-        printf "\n"
-        DNS_ENV_NAMES=("TENCENTCLOUD_SECRET_ID" "TENCENTCLOUD_SECRET_KEY")
-        DNS_ENV_VALUES=("$DNS_KEY_ID" "$DNS_KEY_SECRET")
-        ;;
-    3)
-        DNS_PROVIDER="cloudflare"
-        printf "\n请输入 Cloudflare API Token (需 Zone:DNS 编辑权限，输入时不可见): "
-        stty -echo
-        read -r DNS_API_TOKEN
-        stty echo
-        printf "\n"
-        DNS_ENV_NAMES=("CF_DNS_API_TOKEN")
-        DNS_ENV_VALUES=("$DNS_API_TOKEN")
-        ;;
-    *)
-        printf "❌ 无效输入 '%s'，仅支持 1/2/3。\n" "$DNS_CHOICE"
-        exit 1
-        ;;
-esac
-
-# 凭据只经 .env 传给容器，内容出现空格或引号会破坏 .env 解析
-for value in "${DNS_ENV_VALUES[@]}"; do
-    case "$value" in
-        ''|*[\"\'\ \`\$]*)
-            printf "❌ API 凭据不能为空，且不能包含空格、引号、反引号与 \$。\n"
-            exit 1
-            ;;
-    esac
-done
-
-# ============ 7. 安装配置文件到服务目录 ============
 CONFIG_DIR="${SERVICE_DIR}/config"
-mkdir -p "${CONFIG_DIR}"
-
-# 静态主配置（含 Let's Encrypt 证书解析器）
-STATIC_CONFIG_FILE="$SERVICE_DIR/traefik.toml"
-cp resource/traefik.toml "$STATIC_CONFIG_FILE"
-
-# 动态配置（dashboard 路由及其泛域名证书声明）
-cp resource/config/* "${CONFIG_DIR}/"
-
-# 安装 docker-compose.yml
-COMPOSE_FILE="$SERVICE_DIR/docker-compose.yml"
-cp resource/docker-compose.yml "$COMPOSE_FILE"
+LETSENCRYPT_DIR="${SERVICE_DIR}/letsencrypt"
+STATIC_CONFIG_FILE="${SERVICE_DIR}/traefik.toml"
+ENV_FILE="${SERVICE_DIR}/.env"
+COMPOSE_FILE="${SERVICE_DIR}/docker-compose.yml"
 
 
-# ============ 8. 生成 .env（DNS 凭据，容器启动时注入） ============
-ENV_FILE="$SERVICE_DIR/.env"
-{
-    printf "# Traefik 容器环境变量：DNS 服务商 API 凭据\n"
-    printf "# lego 通过环境变量读取，用于 Let's Encrypt DNS-01 验证\n"
-    printf "ACME_DNS_PROVIDER=%s\n" "$DNS_PROVIDER"
-    for i in "${!DNS_ENV_NAMES[@]}"; do
-        printf "%s=%s\n" "${DNS_ENV_NAMES[$i]}" "${DNS_ENV_VALUES[$i]}"
-    done
-} > "$ENV_FILE"
-# 凭据为明文，只有宿主机上的 docker compose 需要读它
+# ---------- 4. ACME 基础信息（邮箱与 CA 环境；已有则自动沿用） ----------
+# DNS resolver 池初始为空：首次需要签发证书的业务应用安装时引导新增，
+# 或随时执行 bash run.sh configure traefik
+printf "==========================================\n"
+printf "🔐 请配置 Let's Encrypt 基础信息（供后续 DNS resolver 使用）\n"
+printf "==========================================\n"
+collect_acme_meta || exit 1
+
+
+# ---------- 5. 安装基础文件 ----------
+mkdir -p "$CONFIG_DIR" "$LETSENCRYPT_DIR"
+cp "$SCRIPT_PATH/resource/traefik.toml" "$STATIC_CONFIG_FILE"
+cp "$SCRIPT_PATH/resource/config/dashboard.toml" "$CONFIG_DIR/dashboard.toml"
+cp "$SCRIPT_PATH/resource/docker-compose.yml" "$COMPOSE_FILE"
+
+# .env 仅存 DNS 凭据组（由 configure/应用新增 resolver 时追加），本体先写表头
+printf "# Traefik 容器环境变量：DNS 服务商 API 凭据\n# lego 通过环境变量读取，用于 Let's Encrypt DNS-01 验证\n" > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
-
-# ============ 9. 准备 ACME 证书存储 ============
-# Traefik 拒绝加载权限过宽的 acme.json，必须先建好并收紧权限
-LETSENCRYPT_DIR="$SERVICE_DIR/letsencrypt"
-mkdir -p "${LETSENCRYPT_DIR}"
-touch "${LETSENCRYPT_DIR}/acme.json"
-chmod 600 "${LETSENCRYPT_DIR}/acme.json"
+# 重装覆盖模板后，既有 DNS resolver 段被清空（证书存储文件保留）
+if [ "$MODE" = reinstall ]; then
+    printf "⚠️  重装已清空 resolver 池；DNS resolver 可经 bash run.sh configure traefik\n"
+    printf "   重新添加（同名 provider 复用原证书存储），或在应用安装时引导新增。\n"
+fi
 
 
-# ============ 10. 配置 Dashboard 域名与访问凭证 ============
+# ---------- 6. 配置 Dashboard 域名与访问凭证 ----------
+default_dash=""
+# shellcheck disable=SC2206
+[ -n "$ROOT_DOMAINS" ] && default_dash="traefik.$(printf '%s' "${ROOT_DOMAINS%% *}")"
 printf "==========================================\n"
 printf "🔐 请配置 Traefik Dashboard\n"
 printf "==========================================\n"
-printf "请输入 Dashboard 访问域名 [traefik.%s]: " "$ROOT_DOMAIN"
-read -r DASHBOARD_DOMAIN
-DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN:-traefik.${ROOT_DOMAIN}}
+while true; do
+    if [ -n "$default_dash" ]; then
+        printf "请输入 Dashboard 访问域名 [%s]: " "$default_dash"
+    else
+        printf "请输入 Dashboard 访问域名（如 traefik.example.com）: "
+    fi
+    read -r DASHBOARD_DOMAIN || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
+    DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN:-$default_dash}
+    if [ -z "$DASHBOARD_DOMAIN" ]; then
+        printf "❌ 无根域名池时 Dashboard 域名不能为空。\n"
+        continue
+    fi
+    validate_root_domain "$DASHBOARD_DOMAIN" && break
+done
 
 # 确保 htpasswd 可用（缺失时经包管理器自动安装，覆盖主流发行版）；
 # 安装失败必须中止，否则空哈希会静默写进 dashboard 认证配置
@@ -206,11 +132,11 @@ ensure_htpasswd || {
 # 注意：这里的用户名/密码是 Traefik Dashboard 网页的登录凭证，
 # 与安装提权用的系统管理员账户无关
 printf "请输入 Dashboard 登录用户名（仅用于登录 Traefik Dashboard 网页，非系统管理员）: "
-read -r DASHBOARD_USER
+read -r DASHBOARD_USER || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
 
 printf "请输入 Dashboard 登录密码 (输入时不可见): "
 stty -echo  # 隐藏密码输入
-read -r DASHBOARD_PASS
+read -r DASHBOARD_PASS || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
 stty echo   # 恢复显示
 printf "\n"  # 换行，保持输出美观
 
@@ -218,32 +144,26 @@ printf "\n"  # 换行，保持输出美观
 HASH=$(htpasswd -nbB "$DASHBOARD_USER" "$DASHBOARD_PASS" | cut -d ":" -f 2)
 
 
-# ============ 11. 替换配置占位符 ============
-# 静态配置：ACME 邮箱、CA 地址、DNS 服务商
-sed -i "s|__ACME_EMAIL__|$(sed_escape "$ACME_EMAIL")|g" "$STATIC_CONFIG_FILE"
-sed -i "s|__ACME_CA_SERVER__|$(sed_escape "$ACME_CA_SERVER")|g" "$STATIC_CONFIG_FILE"
-sed -i "s|__ACME_DNS_PROVIDER__|$(sed_escape "$DNS_PROVIDER")|g" "$STATIC_CONFIG_FILE"
-
+# ---------- 7. 替换配置占位符 ----------
 DASHBOARD_CONFIG_FILE="${CONFIG_DIR}/dashboard.toml"
 sed -i "s|__DASH_BOARD_DOMAIN__|$(sed_escape "$DASHBOARD_DOMAIN")|g" "$DASHBOARD_CONFIG_FILE"
 sed -i "s|__DASH_BOARD_CREDENTIAL__|$(sed_escape "${DASHBOARD_USER}:${HASH}")|g" "$DASHBOARD_CONFIG_FILE"
-sed -i "s|__ACME_MAIN_DOMAIN__|$(sed_escape "$WILDCARD_DOMAIN")|g" "$DASHBOARD_CONFIG_FILE"
-sed -i "s|__ACME_SANS_DOMAIN__|$(sed_escape "$ROOT_DOMAIN")|g" "$DASHBOARD_CONFIG_FILE"
-
 printf "✅ Traefik Dashboard 认证配置已写入！\n"
 
 
-# ============ 12. 放行防火墙并收尾（自动适配 ufw / firewalld） ============
+# ---------- 8. 持久化 + 防火墙 + 收尾 ----------
+set_installer_key TRAEFIK_HOME "$SERVICE_DIR" || exit 1
+
 open_firewall_ports 80/tcp 443/tcp
 
 printf -- "----------------------------------------\n"
-printf "签名域名:   %s（含 %s）\n" "$ROOT_DOMAIN" "$WILDCARD_DOMAIN"
-printf "ACME 环境:  %s\n" "$ACME_CA_SERVER"
-printf "DNS 服务商: %s\n" "$DNS_PROVIDER"
 printf "Dashboard:  https://%s/dashboard/\n" "$DASHBOARD_DOMAIN"
+printf "resolver:   DNS 池当前为空，应用安装时引导新增，或执行 bash run.sh configure traefik\n"
 printf -- "----------------------------------------\n"
 printf "下一步：cd %s && docker compose up -d\n" "$SERVICE_DIR"
-printf "⚠️  请确认 %s 与 %s 的 DNS 记录已指向本机。\n" "$WILDCARD_DOMAIN" "$DASHBOARD_DOMAIN"
+printf "ℹ️  根域名与通配证书无需在此配置：安装业务应用时选择/新增 DNS resolver 并声明域名，\n"
+printf "   签发声明经应用 labels 动态下发（热加载），resolver 池变更才需重启。\n"
+printf "⚠️  池为空期间 Dashboard 使用自签证书，首个 resolver 配置并重启后自动替换。\n"
+printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$DASHBOARD_DOMAIN"
 
 echo "✅ $INSTALL_NAME 安装完成！"
-

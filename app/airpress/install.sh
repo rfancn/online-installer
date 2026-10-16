@@ -47,30 +47,13 @@ mkdir -p $TARGET_THEME_DIR
 cp -fr resource/$THEME_NAME $TARGET_THEME_DIR
 
 
-# 2.5 确认访问域名（根域名来自 traefik 全局配置；二级域名默认服务名，需用户确认）
-#     结果写入 .env，供 Traefik 路由规则引用
-require_root_domain || exit 1
-while true; do
-    printf "请输入二级域名（完整访问域名为 <二级域名>.%s）[%s]: " "$ROOT_DOMAIN" "$SERVICE_NAME"
-    read -r HOST_LABEL
-    HOST_LABEL=${HOST_LABEL:-$SERVICE_NAME}
-    case "$HOST_LABEL" in
-        ''|*[\"\'\ \`\$\*]*)
-            printf "❌ 二级域名不能为空，且不能包含空格、引号、反引号、\$ 与 *。\n"
-            continue
-            ;;
-    esac
-    APP_HOST="${HOST_LABEL}.${ROOT_DOMAIN}"
-
-    printf "请确认访问域名: https://%s (y/n) [y]: " "$APP_HOST"
-    read -r host_confirm
-    case "${host_confirm:-y}" in
-        y|Y) break ;;
-        n|N) continue ;;
-        *)   printf "❌ 无效输入 '%s'，请输入 y 或 n。\n" "$host_confirm" ;;
-    esac
-done
+# 2.5 证书与域名配置（方案 B：resolver 从 traefik 静态池选择或引导新增，
+#     通配/精确域名声明随本应用 labels 动态下发，自动触发签发）
+setup_app_certificate || exit 1
 sed -i "s|^\(AIRPRESS_HOST=\).*|\1$(sed_escape "$APP_HOST")|" "$TARGET_ENV_FILE"
+sed -i "s|^\(AIRPRESS_RESOLVER=\).*|\1$(sed_escape "$APP_RESOLVER")|" "$TARGET_ENV_FILE"
+sed -i "s|^\(AIRPRESS_CERT_MAIN=\).*|\1$(sed_escape "$CERT_MAIN")|" "$TARGET_ENV_FILE"
+sed -i "s|^\(AIRPRESS_CERT_SANS=\).*|\1$(sed_escape "$CERT_SANS")|" "$TARGET_ENV_FILE"
 
 
 # 3. 选择数据库类型
@@ -80,7 +63,7 @@ printf "==========================================\n"
 printf "  1) sqlite  (轻量，单文件，无需额外容器)\n"
 printf "  2) mysql   (MySQL 数据库)\n"
 printf "请输入序号 (1/2) [1]: "
-read -r DB_CHOICE
+read -r DB_CHOICE || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
 DB_CHOICE=${DB_CHOICE:-1}
 
 DB_TYPE="sqlite"
@@ -101,7 +84,7 @@ if [ "$DB_TYPE" = "mysql" ]; then
     printf "  1) 容器 MySQL  (随本服务一同启动，需要自动调优参数)\n"
     printf "  2) 外部 MySQL  (连接已有实例，不启动本地容器)\n"
     printf "请输入序号 (1/2) [1]: "
-    read -r MYSQL_MODE_CHOICE
+    read -r MYSQL_MODE_CHOICE || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
     case "$MYSQL_MODE_CHOICE" in
         2) MYSQL_MODE="external" ;;
         *) MYSQL_MODE="container" ;;
@@ -164,7 +147,7 @@ else
     while true; do
         printf "请输入数据库密码: "
         stty -echo  # 隐藏密码输入
-        read -r MYSQL_PASSWORD
+        read -r MYSQL_PASSWORD || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
         stty echo  # 恢复输入
         printf "\n"  # 换行，保持输出美观
 
@@ -189,7 +172,7 @@ else
         # 容器 MySQL：主机名就是容器名，可直接回车使用默认值
         printf "（docker-compose 中 mysql 服务的容器名，airpress-server 将用它作为 DSN 主机名）\n"
         printf "请输入 MySQL 主机名 [airpress-mysql57]: "
-        read -r MYSQL_HOST
+        read -r MYSQL_HOST || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
         MYSQL_HOST=${MYSQL_HOST:-airpress-mysql57}
         MYSQL_PORT=3306
         MYSQL_USER=airpress
@@ -198,12 +181,12 @@ else
         # 外部 MySQL：主机名、端口、账号、库名都必须由用户显式提供
         while true; do
             printf "请输入 MySQL 主机名或 IP: "
-            read -r MYSQL_HOST
+            read -r MYSQL_HOST || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
             [ -n "$MYSQL_HOST" ] && break
             printf "❌ 主机名不能为空。\n"
         done
         printf "请输入 MySQL 端口 [3306]: "
-        read -r MYSQL_PORT
+        read -r MYSQL_PORT || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
         MYSQL_PORT=${MYSQL_PORT:-3306}
         case "$MYSQL_PORT" in
             ''|*[!0-9]*)
@@ -214,7 +197,7 @@ else
         # 用户名与库名同样要避开会破坏 DSN 的字符
         while true; do
             printf "请输入 MySQL 用户名: "
-            read -r MYSQL_USER
+            read -r MYSQL_USER || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
             case "$MYSQL_USER" in
                 ''|*[@:/?\\\"\'\ ]*)
                     printf "❌ 用户名不能为空，且不能包含 @ : / ? \\\\ \" ' 与空格。\n"
@@ -225,7 +208,7 @@ else
         done
         while true; do
             printf "请输入 MySQL 数据库名: "
-            read -r MYSQL_DB
+            read -r MYSQL_DB || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
             case "$MYSQL_DB" in
                 ''|*[@:/?\\\"\'\ ]*)
                     printf "❌ 库名不能为空，且不能包含 @ : / ? \\\\ \" ' 与空格。\n"
@@ -244,7 +227,7 @@ else
         printf "🧠 请配置 MySQL 可用内存\n"
         printf "==========================================\n"
         printf "请输入可分配给 MySQL 的内存（单位 G，正整数）[4]: "
-        read -r MYSQL_MEM_G
+        read -r MYSQL_MEM_G || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
         MYSQL_MEM_G=${MYSQL_MEM_G:-4}
         case "$MYSQL_MEM_G" in
             ''|*[!0-9]*)
@@ -297,6 +280,12 @@ chmod 600 "$TARGET_ENV_FILE" 2>/dev/null
 # （config.yaml 不在此列——它要被挂载进容器供应用读取，贸然改成 600 可能让容器内
 #  非 root 用户读不到配置；确认镜像以 root 运行后可自行再收紧）
 chmod 600 "$COMPOSE_FILE"
+
+# 新增 resolver 修改的是 traefik 静态配置，必须重启容器才生效
+if [ "${RESOLVER_ADDED:-0}" = 1 ]; then
+    printf "⚠️  本次新增了 resolver（traefik 静态配置已变更），需重启 traefik 生效：\n"
+    printf "   cd %s && docker compose restart\n" "$TRAEFIK_HOME"
+fi
 
 echo "✅ $INSTALL_NAME 安装完成！"
 
