@@ -56,10 +56,11 @@ resolve_service_base() {
 
 # 0.5 检测包管理器（load_common 初始化时确定）：
 #     PKG_MANAGER = apt|dnf|yum|apk|zypper|pacman，未识别时为空
-#     PKG_RUN     = 提权前缀（root 下为空，否则 sudo）
+#     PKG_ELEV    = 提权方式，留待首次 pkg_exec 时探测（sudo → su 管理员账户回退）
+#     PKG_SU_ADMIN = su 模式下使用的管理员账户（探测时交互指定，回车默认 root）
 detect_pkg_manager() {
-    PKG_RUN=""
-    [ "$(id -u)" -ne 0 ] && PKG_RUN="sudo"
+    PKG_ELEV=""
+    PKG_SU_ADMIN=""
 
     if command -v apt-get >/dev/null 2>&1; then   PKG_MANAGER="apt"
     elif command -v dnf >/dev/null 2>&1; then     PKG_MANAGER="dnf"
@@ -190,7 +191,43 @@ sed_escape() {
     printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
-# 4. 通用软件包安装原语（依赖 load_common 检测出的 PKG_MANAGER/PKG_RUN）
+# 4. 提权执行：先尝试 sudo（不在 sudoers 时 sudo 自身会提示输入当前用户凭证，
+#    认证失败/无 sudo 时进入回退）→ su 交互式选择管理员账户（默认 root，
+#    root 锁定时可输入其他管理员账户）→ 均不可用则明确报错。
+#    方式在首次调用时探测并缓存到 PKG_ELEV，避免多条命令重复认证
+pkg_exec() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+        return $?
+    fi
+
+    if [ -z "$PKG_ELEV" ]; then
+        if command -v sudo >/dev/null 2>&1 && sudo -v; then
+            PKG_ELEV="sudo"
+        elif command -v su >/dev/null 2>&1; then
+            printf "🔑 sudo 不可用（未安装、不在 sudoers 或认证失败），改用 su 提权\n"
+            # 交互式指定管理员账户（回车默认 root；root 锁定时可输入其他管理员账户）
+            # 在探测阶段读一次并缓存，避免 apt update+install 链重复询问
+            printf "请输入管理员账户名 [root]: "
+            read -r PKG_SU_ADMIN
+            PKG_SU_ADMIN=${PKG_SU_ADMIN:-root}
+            PKG_ELEV="su"
+        else
+            PKG_ELEV="none"
+        fi
+    fi
+
+    case "$PKG_ELEV" in
+        sudo) sudo "$@" ;;
+        su)   su "$PKG_SU_ADMIN" -c "$*" ;;
+        *)
+            printf "❌ 本机没有可用的提权途径（sudo 与 su 均不可用），请以 root 身份手动执行: %s\n" "$*"
+            return 1
+            ;;
+    esac
+}
+
+# 5. 通用软件包安装原语（依赖 load_common 检测出的 PKG_MANAGER，经 pkg_exec 提权）
 #    用法: pkg_install <包名>
 pkg_install() {
     if [ -z "$PKG_MANAGER" ]; then
@@ -198,31 +235,17 @@ pkg_install() {
         return 1
     fi
 
-    # 非 root 时先显式获取提权凭证：这里就是输入管理员密码的提示点
-    # （sudo -v 会在 tty 上提示密码；不在 sudoers 会当场明确失败，
-    #   不会带着未认证状态继续调用包管理器）
-    if [ -n "$PKG_RUN" ]; then
-        if ! command -v sudo >/dev/null 2>&1; then
-            printf "❌ 当前非 root 且系统没有 sudo，无法安装 '%s'，请切换到 root 或安装 sudo。\n" "$1"
-            return 1
-        fi
-        if ! sudo -v; then
-            printf "❌ sudo 认证失败（用户可能不在 sudoers 中或取消了输入），无法安装 '%s'。\n" "$1"
-            return 1
-        fi
-    fi
-
     case "$PKG_MANAGER" in
-        apt)    $PKG_RUN apt-get update && $PKG_RUN apt-get install -y "$1" ;;
-        dnf)    $PKG_RUN dnf install -y "$1" ;;
-        yum)    $PKG_RUN yum install -y "$1" ;;
-        apk)    $PKG_RUN apk add --no-cache "$1" ;;
-        zypper) $PKG_RUN zypper --non-interactive install "$1" ;;
-        pacman) $PKG_RUN pacman -Sy --noconfirm "$1" ;;
+        apt)    pkg_exec apt-get update && pkg_exec apt-get install -y "$1" ;;
+        dnf)    pkg_exec dnf install -y "$1" ;;
+        yum)    pkg_exec yum install -y "$1" ;;
+        apk)    pkg_exec apk add --no-cache "$1" ;;
+        zypper) pkg_exec zypper --non-interactive install "$1" ;;
+        pacman) pkg_exec pacman -Sy --noconfirm "$1" ;;
     esac
 }
 
-# 5. 确保 htpasswd 可用：缺失时按发行版映射包名后调用 pkg_install，
+# 6. 确保 htpasswd 可用：缺失时按发行版映射包名后调用 pkg_install，
 #    安装后复检；返回非 0 表示仍不可用，调用方须中止
 ensure_htpasswd() {
     command -v htpasswd >/dev/null 2>&1 && return 0
