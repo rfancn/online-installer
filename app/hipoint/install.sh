@@ -1,13 +1,14 @@
 #!/bin/bash
 
 # ================= app/hipoint/install.sh =================
-# hipoint：纯 Traefik 反向代理接入（本应用不起自己的容器）。
-# 在已装 traefik 的动态目录下生成 hipoint.toml（file provider，watch 热加载）：
-#   - 管理前端(pc-admin)：根路径兜底 → 静态服务后端 + Cache-Control no-store
-#   - API 多租户：每个租户域名 /api/ → StripPrefix → 共用 API 后端 + hd-sub-domain
+# hipoint：纯 Traefik 反向代理接入（本应用不起自己的容器）。做两件事：
+#   1) 已装 traefik 动态目录生成 hipoint.toml（file provider，watch 热加载）：
+#      - 管理前端(pc-admin)：根路径兜底 → 本机 nginx 静态服务
+#      - API 多租户：每租户域名 /api/ → StripPrefix → 共用 API 后端 + hd-sub-domain
+#   2) 生成管理前端 nginx 静态配置存 $SERVICE_DIR/nginx，软链到 /etc/nginx/conf.d。
 # hd-sub-domain 由各域名剥去根域名自动派生（如 wx.h1dian.com → wx）。
 # 翻译自原 nginx：Host/X-Forwarded-For 由 Traefik 默认透传不补；X-Real-IP 沿用
-# 仓库既有策略省略（应用统一读 XFF）；root/try_files/index 属静态服务自身职责不译。
+# 仓库既有策略省略（应用统一读 XFF）；Cache-Control/SPA 回退由 nginx 提供不重复设。
 
 # 统一入口可能从任意目录调起；切到脚本所在目录使相对路径在任何 cwd 下有效
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
@@ -104,12 +105,27 @@ while true; do
     API_BACKEND=$(normalize_url "${API_BACKEND:-http://host.docker.internal:1000}") && break
     printf "❌ 地址不能为空，请重新输入。\n"
 done
+# 管理前端静态服务由本机 nginx 提供：采集监听端口，Traefik 管理路由指向 host.docker.internal:<端口>
 while true; do
-    printf "管理前端静态服务地址（如 http://host.docker.internal:8080）: "
-    IFS= read -r ADMIN_BACKEND || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
-    ADMIN_BACKEND=$(normalize_url "$ADMIN_BACKEND") && break
-    printf "❌ 静态服务地址不能为空，请重新输入。\n"
+    printf "管理前端 nginx 监听端口 [8080]: "
+    IFS= read -r NGINX_PORT || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
+    NGINX_PORT="${NGINX_PORT:-8080}"
+    case "$NGINX_PORT" in
+        ''|*[!0-9]*) printf "❌ 端口须为数字，请重新输入。\n"; continue ;;
+    esac
+    [ "$NGINX_PORT" -ge 1 ] && [ "$NGINX_PORT" -le 65535 ] || { printf "❌ 端口须在 1-65535。\n"; continue; }
+    break
 done
+ADMIN_BACKEND="http://host.docker.internal:${NGINX_PORT}"
+
+# 管理前端 nginx 派生量：sub=主域名剥根域名；root 目录与日志名按约定生成
+ADMIN_SUB=$(derive_sub "$MAIN_HOST")
+if [ -n "$SELECTED_ROOT_DOMAIN" ]; then
+    ADMIN_LOG_PREFIX="${ADMIN_SUB}.${SELECTED_ROOT_DOMAIN}"
+else
+    ADMIN_LOG_PREFIX="$ADMIN_SUB"
+fi
+ADMIN_ROOT="/usr/share/nginx/html/${ADMIN_SUB}"
 
 
 # ---------- 5. 动态配置生成器（可变租户数，逐段 printf 输出到 stdout） ----------
@@ -140,16 +156,11 @@ render_toml() {
     printf '[http.middlewares.hipoint-api-stripprefix.stripprefix]\n'
     printf '  prefix = "/api"\n\n'
 
-    printf '# --- 管理前端：禁用缓存（对应 nginx add_header Cache-Control）---\n'
-    printf '[http.middlewares.hipoint-admin-cache.headers]\n'
-    printf '  customResponseHeaders = { "Cache-Control" = "no-store, no-cache, must-revalidate" }\n\n'
-
-    printf '# --- 管理前端路由：根路径兜底 ---\n'
+    printf '# --- 管理前端路由：根路径兜底 → nginx 静态服务（Cache-Control 由 nginx 提供）---\n'
     printf '[http.routers.hipoint-admin]\n'
     printf '  rule = "Host(`%s`)"\n' "$MAIN_HOST"
     printf '  entryPoints = ["websecure"]\n'
     printf '  service = "hipoint-admin-svc"\n'
-    printf '  middlewares = ["hipoint-admin-cache"]\n'
     printf '  priority = 50\n'
     printf '  [http.routers.hipoint-admin.tls]\n'
     printf '    certResolver = "%s"\n' "$APP_RESOLVER"
@@ -188,14 +199,44 @@ cp "${SERVICE_DIR}/hipoint.toml" "${DYNAMIC_DIR}/hipoint.toml" || {
 printf "✅ 动态配置已写入: %s（留档: %s/hipoint.toml）\n" "${DYNAMIC_DIR}/hipoint.toml" "$SERVICE_DIR"
 
 
+# ---------- 6b. 管理前端 nginx 静态服务：生成配置并软链到 /etc/nginx/conf.d ----------
+NGINX_SRC="${SERVICE_DIR}/nginx/hipoint-admin.conf"
+NGINX_LINK="/etc/nginx/conf.d/hipoint-admin.conf"
+
+command -v nginx >/dev/null 2>&1 || {
+    printf "⚠️  未检测到 nginx，正在尝试安装...\n"
+    pkg_install nginx
+}
+if ! command -v nginx >/dev/null 2>&1; then
+    printf "❌ nginx 仍不可用，已跳过 nginx 静态配置落地（Traefik 路由已就绪）。\n"
+    printf "   装好 nginx 后手动执行: sudo ln -sfn '<模板渲染结果>' %s 并重载 nginx。\n" "$NGINX_LINK"
+else
+    mkdir -p "${SERVICE_DIR}/nginx"
+    sed \
+        -e "s|__SOURCE__|$(sed_escape "$NGINX_SRC")|g" \
+        -e "s|__NGINX_PORT__|$(sed_escape "$NGINX_PORT")|g" \
+        -e "s|__SERVER_NAME__|$(sed_escape "$MAIN_HOST")|g" \
+        -e "s|__LOG_PREFIX__|$(sed_escape "$ADMIN_LOG_PREFIX")|g" \
+        -e "s|__ROOT_DIR__|$(sed_escape "$ADMIN_ROOT")|g" \
+        "${SCRIPT_PATH}/resource/nginx/admin.conf.tpl" > "$NGINX_SRC" \
+        || { printf "❌ 生成 nginx 配置失败。\n"; exit 1; }
+    printf "✅ nginx 配置已生成: %s\n" "$NGINX_SRC"
+    # ln -sfn 覆盖旧链接；写 /etc/nginx 需提权，经 pkg_exec（sudo/su）
+    if pkg_exec ln -sfn "$NGINX_SRC" "$NGINX_LINK"; then
+        printf "✅ 已软链: %s → %s\n" "$NGINX_LINK" "$NGINX_SRC"
+    else
+        printf "❌ 软链到 %s 失败，请手动执行: sudo ln -sfn '%s' '%s'\n" "$NGINX_LINK" "$NGINX_SRC" "$NGINX_LINK"
+    fi
+fi
+
+
 # ---------- 7. 收尾提示 ----------
 printf -- "----------------------------------------\n"
-printf "管理前端: https://%s/\n" "$MAIN_HOST"
+printf "管理前端: https://%s/  →  nginx %s (root %s)\n" "$MAIN_HOST" "$ADMIN_BACKEND" "$ADMIN_ROOT"
 printf "API 租户 (%d 个):\n" "${#API_HOSTS[@]}"
 for h in "${API_HOSTS[@]}"; do
     printf "  - https://%s/api/  →  %s   (hd-sub-domain=%s)\n" "$h" "$API_BACKEND" "$(derive_sub "$h")"
 done
-printf "静态后端: %s\n" "$ADMIN_BACKEND"
 printf -- "----------------------------------------\n"
 
 # host.docker.internal 依赖 traefik 容器的 host-gateway 映射；已装的 traefik 若缺则须重建
@@ -210,6 +251,14 @@ elif [ "${RESOLVER_ADDED:-0}" = 1 ]; then
     printf "   cd %s && docker compose restart\n" "$TRAEFIK_HOME"
 else
     printf "ℹ️  配置写入动态目录后由 Traefik watch 自动热加载，无需重启。\n"
+fi
+
+# nginx 改了配置需重载才生效；静态目录须自行放入 pc-admin 构建产物
+if command -v nginx >/dev/null 2>&1 && [ -e "$NGINX_LINK" ]; then
+    printf -- "----------------------------------------\n"
+    printf "🔁 管理前端静态服务需重载 nginx 生效：\n"
+    printf "   sudo nginx -t && sudo systemctl reload nginx   （或 sudo nginx -s reload）\n"
+    printf "   静态目录 %s 请确认已放入 index.html 等 pc-admin 构建产物。\n" "$ADMIN_ROOT"
 fi
 
 echo "✅ $INSTALL_NAME 安装完成！"
