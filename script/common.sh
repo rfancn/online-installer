@@ -219,6 +219,32 @@ sed_escape() {
     printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
+# 3.5 Traefik 根域名的全局存取：由 traefik 安装时写入 .installer.conf，
+#     各应用安装时读取以推导访问域名（resolve_service_base source 配置时已带入变量）
+
+# 保存根域名到全局配置（更新而非追加，避免重复键）
+save_global_root_domain() {
+    [ -n "$ROOT_DOMAIN" ] || { printf "❌ 内部错误: ROOT_DOMAIN 为空，无法保存。\n"; return 1; }
+    local tmp="${INSTALLER_CONF}.tmp"
+    {
+        grep -v '^ROOT_DOMAIN=' "$INSTALLER_CONF" 2>/dev/null || true
+        printf 'ROOT_DOMAIN=%s\n' "$ROOT_DOMAIN"
+    } > "$tmp" || { printf "❌ 无法写入 %s\n" "$INSTALLER_CONF"; return 1; }
+    mv "$tmp" "$INSTALLER_CONF" || return 1
+    printf "✅ 根域名已保存到全局配置（后续应用安装默认访问 服务名.%s）\n" "$ROOT_DOMAIN"
+}
+
+# 读取全局根域名：不存在则明确报错，要求先安装 traefik
+require_root_domain() {
+    if [ -z "$ROOT_DOMAIN" ]; then
+        printf "❌ 未找到 Traefik 根域名（%s 中没有 ROOT_DOMAIN）。\n" "$INSTALLER_CONF"
+        printf "   请先安装并配置 traefik（bash install.sh traefik），再安装本应用。\n"
+        return 1
+    fi
+    printf "🌐 使用 Traefik 根域名: %s\n" "$ROOT_DOMAIN"
+    return 0
+}
+
 # 4. 提权执行：先尝试 sudo（不在 sudoers 时 sudo 自身会提示输入当前用户凭证，
 #    认证失败/无 sudo 时进入回退）→ su 交互式选择管理员账户（默认 root，
 #    root 锁定时可输入其他管理员账户）→ 均不可用则明确报错。

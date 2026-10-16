@@ -47,47 +47,30 @@ mkdir -p $TARGET_THEME_DIR
 cp -fr resource/$THEME_NAME $TARGET_THEME_DIR
 
 
-# 2.5 收集根域名与访问域名（写入 .env，供 Traefik 路由规则引用）
-printf "==========================================\n"
-printf "🌐 请配置域名\n"
-printf "==========================================\n"
-printf "（根域名需与 Traefik 泛域名证书一致，如 example.com）\n"
+# 2.5 确认访问域名（根域名来自 traefik 全局配置；二级域名默认服务名，需用户确认）
+#     结果写入 .env，供 Traefik 路由规则引用
+require_root_domain || exit 1
 while true; do
-    printf "请输入根域名: "
-    read -r ROOT_DOMAIN
-    case "$ROOT_DOMAIN" in
+    printf "请输入二级域名（完整访问域名为 <二级域名>.%s）[%s]: " "$ROOT_DOMAIN" "$SERVICE_NAME"
+    read -r HOST_LABEL
+    HOST_LABEL=${HOST_LABEL:-$SERVICE_NAME}
+    case "$HOST_LABEL" in
         ''|*[\"\'\ \`\$\*]*)
-            printf "❌ 域名不能为空，且不能包含空格、引号、反引号、\$ 与 *。\n"
+            printf "❌ 二级域名不能为空，且不能包含空格、引号、反引号、\$ 与 *。\n"
             continue
             ;;
     esac
-    break
-done
+    APP_HOST="${HOST_LABEL}.${ROOT_DOMAIN}"
 
-# 访问域名由根域名推导：默认落在 *.根域名 泛域名证书范围内
-while true; do
-    printf "请输入 airpress 访问域名 [airpress.%s]: " "$ROOT_DOMAIN"
-    read -r AIRPRESS_HOST
-    AIRPRESS_HOST=${AIRPRESS_HOST:-airpress.${ROOT_DOMAIN}}
-    case "$AIRPRESS_HOST" in
-        ''|*[\"\'\ \`\$]*)
-            printf "❌ 域名不能为空，且不能包含空格、引号、反引号与 \$。\n"
-            continue
-            ;;
+    printf "请确认访问域名: https://%s (y/n) [y]: " "$APP_HOST"
+    read -r host_confirm
+    case "${host_confirm:-y}" in
+        y|Y) break ;;
+        n|N) continue ;;
+        *)   printf "❌ 无效输入 '%s'，请输入 y 或 n。\n" "$host_confirm" ;;
     esac
-    break
 done
-
-# 不在泛域名范围内时 Traefik 会为它单独签一张证书，提示一下避免意外
-# （证书为 main=*.根域名 + sans=根域名，两者都算已覆盖）
-case "$AIRPRESS_HOST" in
-    "$ROOT_DOMAIN"|*."$ROOT_DOMAIN") ;;
-    *)
-        printf "⚠️  %s 不在 *.%s 泛域名证书范围内，Traefik 将为它单独申请一张证书。\n" \
-            "$AIRPRESS_HOST" "$ROOT_DOMAIN"
-        ;;
-esac
-sed -i "s|^\(AIRPRESS_HOST=\).*|\1$(sed_escape "$AIRPRESS_HOST")|" "$TARGET_ENV_FILE"
+sed -i "s|^\(AIRPRESS_HOST=\).*|\1$(sed_escape "$APP_HOST")|" "$TARGET_ENV_FILE"
 
 
 # 3. 选择数据库类型

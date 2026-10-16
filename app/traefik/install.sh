@@ -26,14 +26,18 @@ init_service || exit 1
 echo "🚀 开始将服务安装到: $SERVICE_DIR"
 
 
-# ============ 3. 收集根域名（用于签发泛域名证书） ============
+# ============ 3. 收集根域名（用于签发泛域名证书，保存到全局供各应用复用） ============
 printf "==========================================\n"
 printf "🌐 请配置根域名\n"
 printf "==========================================\n"
 printf "（将签发 *.域名 泛域名证书，证书同时覆盖域名本身）\n"
 while true; do
-    printf "请输入根域名（如 example.com）: "
-    read -r ROOT_DOMAIN
+    # 全局配置已有根域名（重装/追加场景）时作为默认值
+    saved_hint=""
+    [ -n "$ROOT_DOMAIN" ] && saved_hint="（已配置: ${ROOT_DOMAIN}，回车沿用）"
+    printf "请输入根域名 %s（如 example.com）: " "$saved_hint"
+    read -r input_domain
+    [ -n "$input_domain" ] && ROOT_DOMAIN="$input_domain"
     case "$ROOT_DOMAIN" in
         ''|*[\"\'\ \`\$\*]*)
             printf "❌ 域名不能为空，且不能包含空格、引号、反引号、\$ 与 *。\n"
@@ -43,6 +47,8 @@ while true; do
     break
 done
 WILDCARD_DOMAIN="*.${ROOT_DOMAIN}"
+# 持久化到 .installer.conf：业务应用安装时据此推导访问域名，不再询问根域名
+save_global_root_domain || printf "⚠️  根域名保存失败，后续应用安装将无法自动推导域名。\n"
 
 
 # ============ 4. 收集证书通知邮箱 ============
