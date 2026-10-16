@@ -3,6 +3,9 @@ services:
     image: traefik:v3
     container_name: traefik
     restart: always
+    # 允许经 http://host.docker.internal:<端口> 转发到宿主机上的服务（供业务应用共用）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - web
     ports:
