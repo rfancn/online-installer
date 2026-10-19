@@ -13,8 +13,7 @@ server {
     access_log /var/log/nginx/__LOG_PREFIX__-access.log;
     error_log  /var/log/nginx/__LOG_PREFIX__-error.log;
 
-    # 静态站点：按根路径处理（PC 管理端的 /admin 前缀已由 Traefik 剥离；
-    # 微信回调站点由 Traefik 原路径转发，不做剥离）
+    # PC 管理端与微信回调站点均由 Traefik 原路径转发，不做剥离
     location / {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
         root __ROOT_DIR__;
