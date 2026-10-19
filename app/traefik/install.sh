@@ -113,13 +113,19 @@ case "${add_choice:-y}" in
         ;;
 esac
 
-# ---------- 6. 配置 Dashboard：先定证书 resolver，再推导访问域名 ----------
-# Dashboard 证书需绑定 resolver：从池选择/新增，或跳过（自签兜底）
+# ---------- 6. 配置 Dashboard：先选证书方式，ACME 再定 resolver，最后推导访问域名 ----------
+# ACME：从池选择/新增 resolver，或跳过（自签兜底）；静态：certResolver 置空，按 SNI 匹配
 printf "==========================================\n"
 printf "🔐 请配置 Traefik Dashboard\n"
 printf "==========================================\n"
-choose_or_add_resolver "" allow_skip || exit 1
-DASH_RESOLVER="$APP_RESOLVER"
+choose_cert_source "Traefik Dashboard" || exit 1
+DASH_RESOLVER=""
+if [ "$CERT_MODE" = auto ]; then
+    choose_or_add_resolver "" allow_skip || exit 1
+    DASH_RESOLVER="$APP_RESOLVER"
+else
+    printf "✅ 使用静态证书：请确认预置证书的 SAN 覆盖 Dashboard 访问域名，否则将回退自签默认证书。\n"
+fi
 
 # 默认访问域名推导：优先泛域名 resolver 的根域名（*.root@provider），
 # 其次根域名池第一项，最后单域名 resolver 的域名；均无则需手动输入
@@ -180,7 +186,11 @@ if [ -n "$DASH_RESOLVER" ]; then
     printf "✅ Traefik Dashboard 认证配置已写入（证书 resolver: %s）！\n" "$DASH_RESOLVER"
 else
     sed -i '/certResolver = "__DASH_RESOLVER__"/d' "$DASHBOARD_CONFIG_FILE"
-    printf "✅ Traefik Dashboard 认证配置已写入（未绑定 resolver，暂用自签证书）！\n"
+    if [ "$CERT_MODE" = static ]; then
+        printf "✅ Traefik Dashboard 配置已写入（静态证书按 SNI 匹配，未命中回退自签）！\n"
+    else
+        printf "✅ Traefik Dashboard 认证配置已写入（未绑定 resolver，暂用自签证书）！\n"
+    fi
 fi
 
 

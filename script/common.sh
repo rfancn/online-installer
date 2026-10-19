@@ -791,12 +791,13 @@ setup_app_certificate() {
     return 0
 }
 
-# 应用证书方式选择：ACME 自动签发（resolver）或 静态证书（SNI 匹配已预置证书）
+# 证书方式选择：ACME 自动签发（resolver）或 静态证书（SNI 匹配已预置证书）
+# 参数: $1 = 可选对象名（如 "Traefik Dashboard"），默认"应用"
 # 结果: CERT_MODE=auto|static
 choose_cert_source() {
-    local choice e
+    local target="${1:-应用}" choice e
     printf "==========================================\n"
-    printf "📜 请选择本应用的证书方式\n"
+    printf "📜 请选择%s的证书方式\n" "$target"
     printf "==========================================\n"
     printf "  1) 自动签发（ACME DNS-01，从 resolver 池选择/新增）\n"
     printf "  2) 静态证书（使用 traefik 已预置证书，按 SNI 匹配）\n"

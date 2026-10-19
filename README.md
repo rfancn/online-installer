@@ -29,7 +29,8 @@ ACME 统一走 **DNS-01**，resolver 池只包含 DNS resolver。两层职责分
   **`域名@提供商`** 命名：泛域名 `*.example.com@aliyun`（同根域名下应用共享），
   单域名 `app.example.com@aliyun`；每个"域名+提供商"一个，独立证书存储
   `letsencrypt/acme-<resolver>.json`（官方禁止共用）。
-  Dashboard 配置时会**绑定一个 resolver** 签发其域名证书（可选择跳过=自签兜底）。
+  Dashboard 配置时先选证书方式：**ACME 自动签发**则绑定/跳过 resolver，
+  **静态证书**则按 SNI 匹配预置证书。
   新增 resolver 途径：
 
   ```bash
@@ -59,4 +60,5 @@ ACME 统一走 **DNS-01**，resolver 池只包含 DNS resolver。两层职责分
 
 - 应用内新增 resolver 会修改 traefik 静态配置，应用安装结束时提示重启 traefik；
 - 尚未安装 traefik 时应用安装会报错并要求先 `bash run.sh install traefik`；
-- Dashboard 域名由第一个可用 resolver 自动签发精确证书，池为空期间临时自签。
+- Dashboard 在 ACME 模式下由所选 resolver 签发精确证书（可跳过：自签兜底），
+  静态证书模式按 SNI 匹配；访问域名默认从根域名池推导。
