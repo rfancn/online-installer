@@ -3,9 +3,9 @@
 # ================= app/hipoint/install.sh =================
 # hipoint：纯 Traefik 反向代理接入（本应用不起自己的容器）。做两件事：
 #   1) 已装 traefik 动态目录生成 hipoint.toml（file provider，watch 热加载）：
-#      - 仅处理 xxx.根域名 的请求，xxx 作为 hd-sub-domain；主域名本身不转发
-#      - 子域名的根路径 / `/admin` → PC 管理端（剥离第一段）
-#      - 子域名的其余请求 → API 服务（剥离第一段）
+#      - 仅处理已配置的租户子域名；主域名本身不转发
+#      - 租户子域名的根路径 / `/admin` → PC 管理端（剥离第一段）
+#      - 租户子域名的 /api → API 服务（剥离第一段，带 hd-sub-domain）；其余路径不转发
 #      - 微信回调子域名 → 微信回调静态服务（原路径，不剥离，带 hd-sub-domain）
 #   2) 生成 PC 管理端与微信回调的 nginx 配置存 $SERVICE_DIR/nginx，软链到 /etc/nginx/conf.d。
 # 翻译自原 nginx：Host/X-Forwarded-For 由 Traefik 默认透传不补；X-Real-IP 沿用
@@ -142,7 +142,7 @@ for rd in $ROOT_DOMAINS; do [ "$rd" = "$ROOT_DOMAIN" ] && seen_root=1; done
 [ -n "$seen_root" ] || save_global_root_domains $ROOT_DOMAINS "$ROOT_DOMAIN" || exit 1
 
 
-# ---------- 3. 服务信息：PC 管理端端口、API 端口、微信回调子域名、租户子域名 ----------
+# ---------- 3. 服务信息：PC 管理端端口、API 端口、微信回调子域名 ----------
 printf "==========================================\n"
 printf "🧩 服务配置（主域名: %s）\n" "$ROOT_DOMAIN"
 printf "==========================================\n"
@@ -200,18 +200,18 @@ WX_LOG_PREFIX="wx.${ROOT_DOMAIN}"
 ADMIN_ROOT="/usr/share/nginx/html/admin"
 WX_ROOT="/usr/share/nginx/html/wx"
 
-# 租户子域名：根路径/`/admin` → PC 管理端，其余路径剥离第一段 → API + hd-sub-domain
+# 租户子域名 → 完整 Host 列表
 TENANT_HOSTS=()
 for tsub in "${TENANT_SUBS[@]}"; do
     TENANT_HOSTS+=("${tsub}.${ROOT_DOMAIN}")
 done
 
-printf "ℹ️  主域名 %s 本身不转发业务请求，仅子域名参与路由。\n" "$ROOT_DOMAIN"
-printf "✅ PC管理端: https://<租户>.%s/ 或 /admin/ → %s（剥离第一段）\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND"
-printf "✅ API 服务: https://<租户>.%s/api/ 及其余路径 → %s（剥离第一段，hd-sub-domain=租户）\n" "$ROOT_DOMAIN" "$API_BACKEND"
+printf "ℹ️  主域名 %s 本身不转发业务请求，仅租户子域名与微信回调子域名参与路由。\n" "$ROOT_DOMAIN"
+printf "✅ PC管理端: https://<租户>.%s/ 或 /admin/ → %s（剥离第一段，hd-sub-domain=租户）\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND"
+printf "✅ API 服务: https://<租户>.%s/api/ → %s（剥离第一段，hd-sub-domain=租户；其余路径不转发）\n" "$ROOT_DOMAIN" "$API_BACKEND"
 printf "✅ 微信回调: https://%s/ → %s（原路径，不剥离，hd-sub-domain=%s）\n" "$WX_HOST" "$WX_BACKEND" "$WX_SUB"
 for h in "${TENANT_HOSTS[@]}"; do
-    printf "✅ 租户: https://%s/ 或 /admin/ → PC 管理端；其余路径剥离第一段 → API（hd-sub-domain=%s）\n" \
+    printf "✅ 租户: https://%s/ 或 /admin/ → PC 管理端；/api/ → API（均剥离第一段，hd-sub-domain=%s）\n" \
         "$h" "$(derive_sub "$h")"
 done
 
@@ -241,59 +241,57 @@ render_toml() {
     printf '    url = "%s"\n\n' "$(toml_escape "$ADMIN_BACKEND")"
 
     printf '# --- 微信回调后端 ---\n'
-    printf '[http.services.hipoint-wx-svc.loadBalancer]\n'
-    printf '  [[http.services.hipoint-wx-svc.loadBalancer.servers]]\n'
+    printf '[http.services.hipoint-wx-callback-svc.loadBalancer]\n'
+    printf '  [[http.services.hipoint-wx-callback-svc.loadBalancer.servers]]\n'
     printf '    url = "%s"\n\n' "$(toml_escape "$WX_BACKEND")"
 
     printf '# --- 路径前缀剥离：统一剥离 URL 第一段（微信回调子域名除外） ---\n'
     printf '[http.middlewares.hipoint-firstpath-strip.stripPrefixRegex]\n'
     printf '  regex = "^/[^/]+"\n\n'
 
-    # 微信回调子域名：所有路径原样转发 wx 静态服务（不剥离），子域名写入 hd-sub-domain
-    local wx_s
-    wx_s=$(slug "$WX_HOST")
+    # 微信回调子域名：原路径原样转发（不剥离），子域名写入 hd-sub-domain
     printf '# --- 微信回调子域名：原路径 → wx 静态服务（不剥离，hd-sub-domain=%s） ---\n' "$WX_SUB"
-    printf '[http.middlewares.hipoint-hdr-%s.headers]\n' "$wx_s"
+    printf '[http.middlewares.hipoint-wx-callback-headers.headers]\n'
     printf '  customRequestHeaders = { "hd-sub-domain" = "%s" }\n\n' "$(toml_escape "$WX_SUB")"
-    printf '[http.routers.hipoint-callback]\n'
+    printf '[http.routers.hipoint-wx-callback]\n'
     printf '  rule = "Host(`%s`)"\n' "$WX_HOST"
     printf '  entryPoints = ["websecure"]\n'
-    printf '  service = "hipoint-wx-svc"\n'
-    printf '  middlewares = ["hipoint-hdr-%s"]\n' "$wx_s"
+    printf '  service = "hipoint-wx-callback-svc"\n'
+    printf '  middlewares = ["hipoint-wx-callback-headers"]\n'
     printf '  priority = 200\n'
-    printf '  [http.routers.hipoint-callback.tls]\n'
+    printf '  [http.routers.hipoint-wx-callback.tls]\n'
     [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
-    tls_domains_block "http.routers.hipoint-callback"
+    tls_domains_block "http.routers.hipoint-wx-callback"
     printf '\n'
 
-    # 租户子域名：子域名作为 hd-sub-domain；根路径/`/admin` → PC，其余剥离第一段 → API
+    # 租户子域名：子域名作为 hd-sub-domain；根路径/`/admin` → PC，`/api` → API，其余不转发
     local h s sub
     for h in "${TENANT_HOSTS[@]}"; do
-        s=$(slug "$h"); sub=$(derive_sub "$h")
-        printf '# --- 租户: %s（hd-sub-domain=%s；根路径/`/admin` → PC；其余剥离第一段 → API）---\n' "$h" "$sub"
-        printf '[http.middlewares.hipoint-hdr-%s.headers]\n' "$s"
+        sub=$(derive_sub "$h"); s=$(slug "$sub")
+        printf '# --- 租户: %s（hd-sub-domain=%s；根路径/`/admin` → PC；`/api` → API）---\n' "$h" "$sub"
+        printf '[http.middlewares.hipoint-tenant-headers-%s.headers]\n' "$s"
         printf '  customRequestHeaders = { "hd-sub-domain" = "%s" }\n\n' "$(toml_escape "$sub")"
 
-        printf '[http.routers.hipoint-pcadmin-%s]\n' "$s"
+        printf '[http.routers.hipoint-tenant-pcadmin-%s]\n' "$s"
         printf '  rule = "Host(`%s`) && (Path(`/`) || Path(`/admin`) || PathPrefix(`/admin/`))"\n' "$h"
         printf '  entryPoints = ["websecure"]\n'
         printf '  service = "hipoint-pcadmin-svc"\n'
-        printf '  middlewares = ["hipoint-firstpath-strip", "hipoint-hdr-%s"]\n' "$s"
+        printf '  middlewares = ["hipoint-firstpath-strip", "hipoint-tenant-headers-%s"]\n' "$s"
         printf '  priority = 200\n'
-        printf '  [http.routers.hipoint-pcadmin-%s.tls]\n' "$s"
+        printf '  [http.routers.hipoint-tenant-pcadmin-%s.tls]\n' "$s"
         [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
-        tls_domains_block "http.routers.hipoint-pcadmin-$s"
+        tls_domains_block "http.routers.hipoint-tenant-pcadmin-$s"
         printf '\n'
 
-        printf '[http.routers.hipoint-api-%s]\n' "$s"
-        printf '  rule = "Host(`%s`)"\n' "$h"
+        printf '[http.routers.hipoint-tenant-api-%s]\n' "$s"
+        printf '  rule = "Host(`%s`) && (Path(`/api`) || PathPrefix(`/api/`))"\n' "$h"
         printf '  entryPoints = ["websecure"]\n'
         printf '  service = "hipoint-api-svc"\n'
-        printf '  middlewares = ["hipoint-firstpath-strip", "hipoint-hdr-%s"]\n' "$s"
-        printf '  priority = 100\n'
-        printf '  [http.routers.hipoint-api-%s.tls]\n' "$s"
+        printf '  middlewares = ["hipoint-firstpath-strip", "hipoint-tenant-headers-%s"]\n' "$s"
+        printf '  priority = 150\n'
+        printf '  [http.routers.hipoint-tenant-api-%s.tls]\n' "$s"
         [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
-        tls_domains_block "http.routers.hipoint-api-$s"
+        tls_domains_block "http.routers.hipoint-tenant-api-$s"
         printf '\n'
     done
 }
@@ -356,11 +354,11 @@ printf -- "----------------------------------------\n"
 printf "PC 管理端（租户子域名）:\n"
 printf "  - https://<租户>.%s/ 或 /admin/  →  %s（剥离第一段，root %s）\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND" "$ADMIN_ROOT"
 printf "API 服务（租户子域名）:\n"
-printf "  - https://<租户>.%s/api/ 及其余路径  →  %s（剥离第一段）\n" "$ROOT_DOMAIN" "$API_BACKEND"
+printf "  - https://<租户>.%s/api/  →  %s（剥离第一段；其余路径不转发）\n" "$ROOT_DOMAIN" "$API_BACKEND"
 printf "微信回调:\n"
-printf "  - https://%s/  →  %s (root %s，原路径不剥离，hd-sub-domain=%s)\n" "$WX_HOST" "$WX_BACKEND" "$WX_ROOT" "$WX_SUB"
+printf "  - https://%s/  →  %s (root %s，原路径不剥离)\n" "$WX_HOST" "$WX_BACKEND" "$WX_ROOT"
 for h in "${TENANT_HOSTS[@]}"; do
-    printf "  - https://%s/ 或 /admin/ → PC；其他路径剥离第一段 → API（hd-sub-domain=%s）\n" \
+    printf "  - https://%s/ 或 /admin/ → PC；/api/ → API（hd-sub-domain=%s）\n" \
         "$h" "$(derive_sub "$h")"
 done
 printf -- "----------------------------------------\n"
