@@ -96,9 +96,10 @@ command -v git >/dev/null 2>&1 || {
     exit 1
 }
 
-TARGET_THEME_DIR="$SERVICE_DIR/resources/template/theme"
-THEME_TMP="${TARGET_THEME_DIR}.tmp"
-mkdir -p "$SERVICE_DIR/resources/template"
+THEME_BASE_DIR="$SERVICE_DIR/resources/template/theme"
+TARGET_THEME_DIR="${THEME_BASE_DIR}/${THEME_NAME}"
+THEME_TMP="${THEME_BASE_DIR}/.${THEME_NAME}.tmp"
+mkdir -p "$THEME_BASE_DIR"
 rm -rf "$THEME_TMP"
 if ! git clone --depth 1 "https://github.com/hipoint-airpress/${THEME_NAME}" "$THEME_TMP"; then
     rm -rf "$THEME_TMP"
