@@ -570,8 +570,9 @@ add_static_cert_flow() {
 switch_acme_ca() {
     local static="${TRAEFIK_HOME}/traefik.toml"
     local current new_ca choice label cur_label count=0 entry stem file backup
-    current="$ACME_CA_SERVER"
-    [ -n "$current" ] || current=$(grep -m1 'caServer = ' "$static" 2>/dev/null | sed 's/.*= *"\(.*\)".*/\1/')
+    # 以 traefik.toml 中实际配置为准，全局配置仅作兜底，避免两者不同步时误判
+    current=$(grep -m1 'caServer = ' "$static" 2>/dev/null | sed 's/.*= *"\(.*\)".*/\1/')
+    [ -n "$current" ] || current="$ACME_CA_SERVER"
 
     case "$current" in
         *staging*)                                      cur_label="测试（staging）" ;;
@@ -599,8 +600,14 @@ switch_acme_ca() {
         2) new_ca="https://acme-staging-v02.api.letsencrypt.org/directory"; label="测试（staging）" ;;
         *) printf "❌ 无效输入 '%s'。\n" "$choice"; return 1 ;;
     esac
-    if [ "$new_ca" = "$current" ]; then
-        printf "ℹ️  当前已是%s环境，无需切换。\n" "$label"
+    # 只有全部渠道都已是目标地址才跳过；部分不同步时仍需统一（幂等）
+    local total target
+    total=$(grep -c 'caServer = ' "$static" 2>/dev/null || true)
+    target=$(grep -c "caServer = \"${new_ca}\"" "$static" 2>/dev/null || true)
+    if [ "$total" -gt 0 ] && [ "$total" = "$target" ]; then
+        set_installer_key ACME_CA_SERVER "$new_ca" || return 1
+        ACME_CA_SERVER="$new_ca"
+        printf "ℹ️  全部证书签发渠道已是%s环境，无需切换。\n" "$label"
         return 0
     fi
 
