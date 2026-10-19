@@ -151,11 +151,11 @@ API_PORT=$(prompt_port "API端口" "1000") || exit 1
 WX_SUB=$(prompt_subdomain "微信回调子域名" "") || exit 1
 WX_HOST="${WX_SUB}.${ROOT_DOMAIN}"
 
-# 其他租户子域名：每个生成 Host 路由并把子域名写入 hd-sub-domain
+# 增加租户子域名：可添加多个，每个生成 Host 路由并把子域名写入 hd-sub-domain
 TENANT_SUBS=()
-printf "其他租户子域名（输入二级域名，回车结束）:\n"
+printf "增加租户子域名（可添加多个，直接回车结束）:\n"
 while true; do
-    printf "租户子域名（回车结束）: "
+    printf "增加租户子域名（回车结束）: "
     IFS= read -r tsub || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
     tsub=$(trim "$tsub")
     [ -z "$tsub" ] && break
