@@ -231,7 +231,9 @@ sed_escape() {
 }
 
 # 3.5 ACME resolver 池与域名的全局管理（纯 DNS-01）：
-#     resolver 命名 = <根域名>@<提供商别名>，如 example.com@aliyun；
+#     resolver 命名 = <证书域名>@<提供商别名>：
+#       泛域名应用 → *.example.com@aliyun（同根域名下应用共享）
+#       单域名应用 → app.example.com@aliyun
 #     静态段存于 traefik.toml（TOML 引号键），根域名池存 .installer.conf
 
 # lego 提供商标识 → 别名（用于 resolver 命名，贴近用户习惯）
@@ -244,7 +246,7 @@ resolver_alias() {
     esac
 }
 
-# resolver 名 = 根域名@提供商别名
+# resolver 名 = <证书域名>@提供商别名
 resolver_name() {
     printf '%s@%s' "$1" "$(resolver_alias "$2")"
 }
@@ -351,15 +353,16 @@ collect_acme_meta() {
 }
 
 # 新增一个 resolver 到 traefik 静态配置（section + 独立 storage + traefik .env 凭据组）
-# 参数: $1 = 根域名；依赖 DNS_PROVIDER、DNS_ENV_NAMES/VALUES、ACME_EMAIL/ACME_CA_SERVER、TRAEFIK_HOME
+# 参数: $1 = resolver 域名（泛域名 *.example.com 或单域名 app.example.com）；
+#       依赖 DNS_PROVIDER、DNS_ENV_NAMES/VALUES、ACME_EMAIL/ACME_CA_SERVER、TRAEFIK_HOME
 create_resolver() {
-    local root="$1" name
-    name=$(resolver_name "$root" "$DNS_PROVIDER")
+    local rd="$1" name
+    name=$(resolver_name "$rd" "$DNS_PROVIDER")
     local static="${TRAEFIK_HOME}/traefik.toml"
     local envf="${TRAEFIK_HOME}/.env"
     local ldir="${TRAEFIK_HOME}/letsencrypt"
 
-    # 同名 resolver（同根域名+同提供商）已存在则拒绝（防重复定义）
+    # 同名 resolver（同证书域名+同提供商）已存在则拒绝（防重复定义）
     if grep -qF "[certificatesResolvers.\"${name}\".acme]" "$static" 2>/dev/null; then
         printf "❌ resolver %s 已存在，请直接选用。\n" "$name"
         return 1
@@ -398,17 +401,25 @@ EOF
 }
 
 # 新增 resolver 交互流程（traefik 的 add-resolver 子命令与应用内引导共用）
-# 参数: $1 = 可选根域名（应用通配模式已知时传入；为空则询问）
+# 参数: $1 = 可选 resolver 域名：
+#         *.example.com（应用泛域名模式）/ app.example.com（应用单域名模式）；
+#         为空（traefik configure）则询问根域名并按 *.根域名 命名
 # 结果: APP_RESOLVER；实际写入时 RESOLVER_ADDED=1，命中既有则 0
 add_dns_resolver() {
-    local root="${1:-}" name entry
-    if [ -z "$root" ]; then
+    local rd="${1:-}" root="" name entry
+    if [ -z "$rd" ]; then
         printf "请输入该 resolver 关联的根域名（如 example.com）: "
-        read -r root || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
-        validate_root_domain "$root" || return 1
+        read -r rd || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+        validate_root_domain "$rd" || return 1
+        # traefik 池按泛域名命名，供该根域名下所有应用共享
+        rd="*.${rd}"
     fi
+    # 仅泛域名登记根域名到全局池；单域名不登记
+    case "$rd" in
+        \*.*) root="${rd#\*.}" ;;
+    esac
     choose_dns_provider || return 1
-    name=$(resolver_name "$root" "$DNS_PROVIDER")
+    name=$(resolver_name "$rd" "$DNS_PROVIDER")
 
     list_traefik_resolvers 2>/dev/null || true
     for entry in "${RESOLVER_POOL[@]}"; do
@@ -422,13 +433,15 @@ add_dns_resolver() {
 
     collect_dns_credentials || return 1
     collect_acme_meta || return 1
-    create_resolver "$root" || return 1
+    create_resolver "$rd" || return 1
     RESOLVER_ADDED=1
-    # 根域名登记进全局池：供 Dashboard 默认域名推导与应用安装时选择复用
-    local rd seen=""
-    for rd in $ROOT_DOMAINS; do [ "$rd" = "$root" ] && seen=1; done
-    [ -n "$seen" ] || save_global_root_domains $ROOT_DOMAINS "$root" || return 1
-    printf "✅ 已新增 resolver %s（根域名 %s，provider: %s）\n" "$APP_RESOLVER" "$root" "$DNS_PROVIDER"
+    # 泛域名的根域名登记进全局池：供 Dashboard 默认域名推导与应用安装时选择复用
+    if [ -n "$root" ]; then
+        local rd_pool seen=""
+        for rd_pool in $ROOT_DOMAINS; do [ "$rd_pool" = "$root" ] && seen=1; done
+        [ -n "$seen" ] || save_global_root_domains $ROOT_DOMAINS "$root" || return 1
+    fi
+    printf "✅ 已新增 resolver %s（域名 %s，provider: %s）\n" "$APP_RESOLVER" "$rd" "$DNS_PROVIDER"
     return 0
 }
 
@@ -559,14 +572,15 @@ configure_traefik_menu() {
 }
 
 # 选择证书 resolver：列出既有池 + 末尾「新增 resolver」
-# 参数: $1 = 通配模式的根域名（只列出 <该根域名>@* 的 resolver，并以其为新增默认）；
-#       为空 = 精确域名模式，列出全部（须自行确认所选提供商托管该域名 NS）
+# 参数: $1 = resolver 域名（泛域名 *.example.com / 单域名 app.example.com；
+#       只列出 <该域名>@* 的 resolver，并以其为新增默认）；
+#       为空 = 列出全部（Dashboard 等）
 # 结果: APP_RESOLVER；实际新增成功时 RESOLVER_ADDED=1（调用方据此提示重启 traefik）
 choose_or_add_resolver() {
-    local wr="${1:-}" allow_skip="${2:-}"
+    local rd="${1:-}" allow_skip="${2:-}"
     printf "==========================================\n"
-    if [ -n "$wr" ]; then
-        printf "🔐 为根域名 %s 选择证书 resolver（命名: 根域名@提供商）\n" "$wr"
+    if [ -n "$rd" ]; then
+        printf "🔐 为域名 %s 选择证书 resolver（命名: 域名@提供商）\n" "$rd"
     else
         printf "🔐 请选择证书签发 resolver（须托管该域名 DNS 的提供商）\n"
     fi
@@ -578,17 +592,20 @@ choose_or_add_resolver() {
         i=1
         shown=0
         for entry in "${RESOLVER_POOL[@]}"; do
-            # 通配模式只显示根域名匹配的 resolver
-            # [[ ]] 才支持右侧模式匹配；[ ] 的 != 是字面比较
-            if [ -n "$wr" ] && [[ "${entry%%|*}" != "${wr}@"* ]]; then
-                continue
+            # 指定域名时只显示 <该域名>@* 的 resolver；
+            # 用 case + 引号前缀匹配，避免 rd 中的 * 被当成模式通配符
+            if [ -n "$rd" ]; then
+                case "${entry%%|*}" in
+                    "${rd}@"*) : ;;
+                    *) continue ;;
+                esac
             fi
             printf "  %d) %s（provider: %s）\n" "$i" "${entry%%|*}" "${entry##*|}"
             i=$((i + 1))
             shown=$((shown + 1))
         done
-        if [ -n "$wr" ]; then
-            printf "  %d) 新增 resolver %s@<提供商>\n" "$i" "$wr"
+        if [ -n "$rd" ]; then
+            printf "  %d) 新增 resolver %s@<提供商>\n" "$i" "$rd"
         else
             printf "  %d) 新增 resolver（输入根域名与提供商）\n" "$i"
         fi
@@ -614,9 +631,12 @@ choose_or_add_resolver() {
             # 定位第 choice 个「已显示」条目（与过滤逻辑一致地重新数一遍）
             local n=0
             for entry in "${RESOLVER_POOL[@]}"; do
-                # [[ ]] 才支持右侧模式匹配；[ ] 的 != 是字面比较
-            if [ -n "$wr" ] && [[ "${entry%%|*}" != "${wr}@"* ]]; then
-                    continue
+                # 与显示过滤一致；引号前缀匹配，避免 rd 中的 * 被当成通配符
+                if [ -n "$rd" ]; then
+                    case "${entry%%|*}" in
+                        "${rd}@"*) : ;;
+                        *) continue ;;
+                    esac
                 fi
                 n=$((n + 1))
                 if [ "$n" -eq "$choice" ]; then
@@ -629,27 +649,29 @@ choose_or_add_resolver() {
         fi
         [ "$choice" -eq "$i" ] || { printf "❌ 超出范围。\n"; continue; }
 
-        # 新增分支：共用 add_dns_resolver（通配模式已带根域名）
-        add_dns_resolver "$wr" || return 1
+        # 新增分支：共用 add_dns_resolver（已带证书域名）
+        add_dns_resolver "$rd" || return 1
         # 刷新池供可能的再次选择
         list_traefik_resolvers 2>/dev/null || true
         return 0
     done
 }
 
-# 选择应用访问域名：根域名池组合（通配）或精确域名直填
-# 结果: APP_HOST / CERT_MAIN / CERT_SANS（通配=*.root+root；精确=空+空，
+# 选择应用访问域名：泛域名（根域名池组合）或单域名直填
+# 结果: APP_HOST / CERT_MAIN / CERT_SANS（泛域名=*.root+root；单域名=空+空，
 #       由 Traefik 对 router rule 中的域名自动签发单域名证书）
+#       APP_RESOLVER_DOMAIN（泛域名=*.root；单域名=完整域名，用于 resolver 命名）
 choose_app_domain() {
     local pool=() d mode label again
+    APP_RESOLVER_DOMAIN=""
     # shellcheck disable=SC2206
     [ -n "$ROOT_DOMAINS" ] && pool=($ROOT_DOMAINS)
 
     printf "==========================================\n"
     printf "🌐 请配置应用访问域名\n"
     printf "==========================================\n"
-    printf "  1) 使用根域名组合二级域名（通配证书 *.根域名，多应用共享）\n"
-    printf "  2) 直接输入应用完整域名（单域名证书，Traefik 自动签发）\n"
+    printf "  1) 泛域名（通配证书 *.根域名，多应用共享）\n"
+    printf "  2) 单域名（完整域名，Traefik 自动签发单域名证书）\n"
 
     while true; do
         printf "请选择方式 (1/2) [1]: "
@@ -704,6 +726,7 @@ choose_app_domain() {
                 CERT_MAIN="*.${root}"
                 CERT_SANS="$root"
                 SELECTED_ROOT_DOMAIN="$root"
+                APP_RESOLVER_DOMAIN="*.${root}"
                 save_global_root_domains "${pool[@]}" || return 1
                 return 0
                 ;;
@@ -716,6 +739,7 @@ choose_app_domain() {
                 CERT_MAIN=""
                 CERT_SANS=""
                 SELECTED_ROOT_DOMAIN=""
+                APP_RESOLVER_DOMAIN="$APP_HOST"
                 return 0
                 ;;
             *) printf "❌ 无效输入 '%s'，请输入 1 或 2。\n" "$mode" ;;
@@ -735,9 +759,10 @@ prompt_new_root_domain() {
     done
 }
 
-# 应用证书信息总入口：确认 traefik 已安装 → 先定域名形态（通配/精确）
+# 应用证书信息总入口：确认 traefik 已安装 → 先定域名形态（泛域名/单域名）
 # → 从 DNS resolver 池选择或引导新增（池为空直接进入新增）
-# 结果: APP_HOST / CERT_MAIN / CERT_SANS / APP_RESOLVER / RESOLVER_ADDED
+# 结果: APP_HOST / CERT_MAIN / CERT_SANS / APP_RESOLVER_DOMAIN /
+#       APP_RESOLVER / RESOLVER_ADDED
 setup_app_certificate() {
     if [ -z "$TRAEFIK_HOME" ] || [ ! -f "$TRAEFIK_HOME/traefik.toml" ]; then
         printf "❌ 尚未安装 traefik（%s 中无 TRAEFIK_HOME 或未找到其配置）。\n" "$INSTALLER_CONF"
@@ -759,8 +784,8 @@ setup_app_certificate() {
         printf "✅ 使用静态证书：请确认 traefik 预置证书的 SAN 覆盖 %s，否则将回退自签默认证书。\n" "$APP_HOST"
         return 0
     fi
-    # 通配模式按根域名过滤 resolver 并以其为新增默认；精确模式传空列出全部
-    choose_or_add_resolver "$SELECTED_ROOT_DOMAIN" || return 1
+    # 按证书域名过滤 resolver：泛域名 *.root / 单域名 完整域名
+    choose_or_add_resolver "$APP_RESOLVER_DOMAIN" || return 1
     return 0
 }
 

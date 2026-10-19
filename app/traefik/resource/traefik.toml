@@ -49,10 +49,12 @@
 
 # --- Let's Encrypt 证书解析器（resolver 池，仅 DNS-01） ---
 # ACME 统一使用 DNS-01 挑战：一个 resolver 绑定一个 DNS 提供商凭据，
-# 通配与精确域名证书都可签发，因此池内只有 [certificatesResolvers.<根域名>@<提供商别名>.acme] 段。
+# 泛域名与单域名证书都可签发，因此池内只有
+# [certificatesResolvers.<证书域名>@<提供商别名>.acme] 段
+# （泛域名如 *.example.com@aliyun，单域名如 app.example.com@aliyun）。
 # 本模板初始不含任何 resolver：由业务应用安装（引导）或
 # bash run.sh configure traefik 经 common.sh 的 create_resolver() 追加到
 # 文件末尾（storage 每 resolver 独立 acme-<resolver名>.json，官方禁止共用存储文件）。
-# 具体签哪些域名不在此配置：通配/精确域名声明随业务应用的 compose labels
+# 具体签哪些域名不在此配置：泛域名/单域名声明随业务应用的 compose labels
 # 动态下发，Traefik 自动签发并热加载；resolver 池本身的变更需重启容器生效。
 # 池为空期间 Dashboard 走 Traefik 默认自签证书，配置 resolver 并重启后自动替换。

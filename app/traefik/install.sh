@@ -121,13 +121,16 @@ printf "==========================================\n"
 choose_or_add_resolver "" allow_skip || exit 1
 DASH_RESOLVER="$APP_RESOLVER"
 
-# 默认访问域名推导：优先所选 resolver 的所属根域名（名字 @ 前段），
-# 其次根域名池第一项；均无则需手动输入
+# 默认访问域名推导：优先泛域名 resolver 的根域名（*.root@provider），
+# 其次根域名池第一项，最后单域名 resolver 的域名；均无则需手动输入
 default_dash=""
-if [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == *@* ]]; then
-    default_dash="traefik.${DASH_RESOLVER%@*}"
+if [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == \*.*@* ]]; then
+    default_dash="traefik.${DASH_RESOLVER#\*.}"
+    default_dash="${default_dash%@*}"
 elif [ -n "$ROOT_DOMAINS" ]; then
     default_dash="traefik.${ROOT_DOMAINS%% *}"
+elif [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == *@* ]]; then
+    default_dash="traefik.${DASH_RESOLVER%@*}"
 fi
 while true; do
     if [ -n "$default_dash" ]; then
