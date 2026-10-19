@@ -312,17 +312,40 @@ list_traefik_resolvers() {
 
 # 收集/沿用 ACME 邮箱与 CA 环境（traefik.toml 已有则沿用，
 # .installer.conf 已存则复用，都没有才交互询问；供 traefik 安装与应用新增 resolver 共用）
+# 参数: $1 = confirm_reuse 时，检测到已有配置会显示并询问是否沿用（安装 traefik 使用）
 collect_acme_meta() {
+    local confirm_reuse="${1:-}" existing_email="" existing_ca=""
     if [ -n "$TRAEFIK_HOME" ] && [ -f "$TRAEFIK_HOME/traefik.toml" ]; then
-        local e c
-        e=$(grep -m1 'email = ' "$TRAEFIK_HOME/traefik.toml" | sed 's/.*= *"\(.*\)".*/\1/')
-        c=$(grep -m1 'caServer = ' "$TRAEFIK_HOME/traefik.toml" | sed 's/.*= *"\(.*\)".*/\1/')
-        if [ -n "$e" ] && [ -n "$c" ]; then
-            ACME_EMAIL="$e"; ACME_CA_SERVER="$c"
-            return 0
-        fi
+        existing_email=$(grep -m1 'email = ' "$TRAEFIK_HOME/traefik.toml" | sed 's/.*= *"\(.*\)".*/\1/')
+        existing_ca=$(grep -m1 'caServer = ' "$TRAEFIK_HOME/traefik.toml" | sed 's/.*= *"\(.*\)".*/\1/')
     fi
-    [ -n "$ACME_EMAIL" ] && [ -n "$ACME_CA_SERVER" ] && return 0
+    if [ -z "$existing_email" ] || [ -z "$existing_ca" ]; then
+        existing_email="$ACME_EMAIL"
+        existing_ca="$ACME_CA_SERVER"
+    fi
+    if [ -n "$existing_email" ] && [ -n "$existing_ca" ]; then
+        ACME_EMAIL="$existing_email"
+        ACME_CA_SERVER="$existing_ca"
+        [ "$confirm_reuse" = confirm_reuse ] || return 0
+
+        # 安装 traefik 时让用户明确看到沿用的值，并允许重新填写
+        local ca_label="生产"
+        case "$ACME_CA_SERVER" in
+            *staging*) ca_label="测试（staging）" ;;
+        esac
+        printf "ℹ️  检测到已有 Let's Encrypt 基础信息：\n"
+        printf "    邮箱: %s\n" "$ACME_EMAIL"
+        printf "    CA:   %s\n" "$ca_label"
+        while true; do
+            printf "是否沿用？(y/n) [y]: "
+            read -r reuse || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+            case "${reuse:-y}" in
+                y|Y) return 0 ;;
+                n|N) ACME_EMAIL=""; ACME_CA_SERVER=""; break ;;
+                *) printf "❌ 无效输入 '%s'，请输入 y 或 n。\n" "$reuse" ;;
+            esac
+        done
+    fi
 
     printf "==========================================\n"
     printf "📧 请配置证书通知邮箱与 Let's Encrypt 环境\n"
@@ -551,22 +574,89 @@ add_static_cert_flow() {
     return 0
 }
 
-# traefik 证书源管理菜单（configure.sh 使用）：
+# 切换 Let's Encrypt CA 环境（生产 ↔ 测试）：
+# 同步更新 traefik.toml 中全部 resolver 的 caServer 与全局默认；
+# 旧环境证书存储备份后清空，重启 traefik 后按新环境重新注册与签发。
+# 结果: CA_CHANGED=1（实际发生切换时）
+switch_acme_ca() {
+    local static="${TRAEFIK_HOME}/traefik.toml"
+    local current new_ca choice label cur_label count=0 entry stem file backup
+    current="$ACME_CA_SERVER"
+    [ -n "$current" ] || current=$(grep -m1 'caServer = ' "$static" 2>/dev/null | sed 's/.*= *"\(.*\)".*/\1/')
+
+    case "$current" in
+        *staging*)                                      cur_label="测试（staging）" ;;
+        https://acme-v02.api.letsencrypt.org/directory) cur_label="生产" ;;
+        '')                                             cur_label="未配置" ;;
+        *)                                              cur_label="$current" ;;
+    esac
+
+    printf "==========================================\n"
+    printf "🔄 切换 Let's Encrypt 环境（当前: %s）\n" "$cur_label"
+    printf "==========================================\n"
+    printf "  1) 生产  (正式证书，浏览器信任，有速率限制)\n"
+    printf "  2) 测试  (staging，不受速率限制，浏览器不信任)\n"
+    if [ "$cur_label" = "生产" ]; then
+        printf "请选择 (1/2) [1]: "
+    else
+        printf "请选择 (1/2) [2]: "
+    fi
+    read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    if [ -z "$choice" ]; then
+        [ "$cur_label" = "生产" ] && choice=1 || choice=2
+    fi
+    case "$choice" in
+        1) new_ca="https://acme-v02.api.letsencrypt.org/directory";         label="生产" ;;
+        2) new_ca="https://acme-staging-v02.api.letsencrypt.org/directory"; label="测试（staging）" ;;
+        *) printf "❌ 无效输入 '%s'。\n" "$choice"; return 1 ;;
+    esac
+    if [ "$new_ca" = "$current" ]; then
+        printf "ℹ️  当前已是%s环境，无需切换。\n" "$label"
+        return 0
+    fi
+
+    # 只替换引号内的地址，保留行尾注释
+    sed -i "s|^\([[:space:]]*caServer = \)\"[^\"]*\"|\1\"${new_ca}\"|" "$static" || return 1
+    set_installer_key ACME_CA_SERVER "$new_ca" || return 1
+    ACME_CA_SERVER="$new_ca"
+
+    # 旧环境存储的账号/证书不再适用：备份后清空，让 traefik 重新注册并签发
+    list_traefik_resolvers 2>/dev/null || true
+    for entry in "${RESOLVER_POOL[@]}"; do
+        stem="${entry%%|*}"
+        file="${TRAEFIK_HOME}/letsencrypt/acme-${stem}.json"
+        if [ -f "$file" ]; then
+            backup="${file}.bak.$(date +%s)"
+            mv "$file" "$backup" || { printf "❌ 备份 %s 失败。\n" "$file"; return 1; }
+            count=$((count + 1))
+        fi
+    done
+
+    CA_CHANGED=1
+    printf "✅ 已切换为%s环境，并备份清空 %d 个 resolver 的证书存储。\n" "$label" "$count"
+    printf "⚠️  需重启 traefik 生效；重启后将按新环境重新签发证书。\n"
+    return 0
+}
+
+# traefik 证书管理菜单（configure.sh 使用）：
 # DNS resolver 新增/复用成功后直接结束；静态证书可继续添加，n 结束；
-# 变更标记经 RESOLVER_ADDED/STATIC_ADDED 返回
+# 变更标记经 RESOLVER_ADDED/STATIC_ADDED/CA_CHANGED 返回
 configure_traefik_menu() {
     local choice
     while true; do
-        printf "🧰 选择要添加的证书来源:\n"
+        printf "🧰 选择要进行的证书操作:\n"
         printf "  1) ACME 自动签发（DNS-01，需 DNS 提供商凭据）\n"
         printf "  2) 静态证书（预签发的证书文件，按 SNI 匹配）\n"
+        printf "  3) 切换 Let's Encrypt 环境（生产/测试）\n"
         printf "  n) 完成\n"
-        printf "请输入 (1/2/n) [n]: "
+        printf "请输入 (1/2/3/n) [n]: "
         read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
         case "$choice" in
             # 新增或复用 resolver 成功后直接退出，不再重复询问是否继续添加
             1) add_dns_resolver && return 0 ;;
             2) add_static_cert_flow ;;
+            # 切换环境属于完整操作，完成后同样结束菜单
+            3) switch_acme_ca && return 0 ;;
             n|N|"") return 0 ;;
             *) printf "❌ 无效输入 '%s'。\n" "$choice" ;;
         esac

@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ================= app/traefik/configure.sh =================
-# traefik 运维脚本：向 ACME resolver 池新增一个 DNS resolver
-# （命名 <域名>@<提供商>：泛域名 *.example.com@aliyun，单域名 app.example.com@aliyun；
-#  业务应用安装时可复用同一流程）。
+# traefik 运维脚本：管理证书来源
+# （新增 DNS resolver、静态证书，或切换 Let's Encrypt 生产/测试环境）。
+# resolver 命名 <域名>@<提供商>：泛域名 *.example.com@aliyun，
+# 单域名 app.example.com@aliyun；业务应用安装时可复用同一流程。
 # 入口：bash run.sh configure traefik
 
 # 使用标准的 $0 获取当前脚本的真实绝对路径
@@ -48,11 +49,12 @@ printf "==========================================\n"
 
 configure_traefik_menu || exit 1
 
-if [ "${RESOLVER_ADDED:-0}" = 1 ] || [ "${STATIC_ADDED:-0}" = 1 ]; then
+if [ "${RESOLVER_ADDED:-0}" = 1 ] || [ "${STATIC_ADDED:-0}" = 1 ] || [ "${CA_CHANGED:-0}" = 1 ]; then
     printf -- "----------------------------------------\n"
-    printf "✅ 证书来源配置已更新（resolver: %s / 静态证书: %s）\n" \
+    printf "✅ 证书配置已更新（resolver: %s / 静态证书: %s / CA 环境: %s）\n" \
         "$([ "${RESOLVER_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')" \
-        "$([ "${STATIC_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')"
+        "$([ "${STATIC_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')" \
+        "$([ "${CA_CHANGED:-0}" = 1 ] && printf '已切换' || printf '无变更')"
     printf "⚠️  均为静态配置变更，需重启生效：cd %s && docker compose restart\n" "$TRAEFIK_HOME"
 fi
 exit 0

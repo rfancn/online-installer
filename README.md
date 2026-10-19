@@ -12,7 +12,7 @@ bash run.sh list                  # 列出可用服务及其支持的动作
 bash run.sh install               # 安装：交互选择服务（app/<名>/install.sh）
 bash run.sh install traefik       # 直接安装 app/traefik
 bash run.sh install airpress      # 直接安装 app/airpress
-bash run.sh configure traefik     # 配置维护：traefik 新增 DNS resolver（app/traefik/configure.sh）
+bash run.sh configure traefik     # 配置维护：证书来源（resolver/静态证书/CA 环境）
 ```
 
 服务根目录在**首次运行时交互指定**（默认 `$HOME/service`），记录在项目根目录的
@@ -31,11 +31,15 @@ ACME 统一走 **DNS-01**，resolver 池只包含 DNS resolver。两层职责分
   `letsencrypt/acme-<resolver>.json`（官方禁止共用）。
   Dashboard 配置时先选证书方式：**ACME 自动签发**则绑定/跳过 resolver，
   **静态证书**则按 SNI 匹配预置证书。
-  新增 resolver 途径：
+  新增 resolver / 切换 CA 环境途径：
 
   ```bash
-  bash run.sh configure traefik   # 追加 DNS resolver，完成后重启 traefik
+  bash run.sh configure traefik   # 管理证书来源，完成后重启 traefik
   ```
+
+  `configure` 菜单支持：新增 DNS resolver、新增静态证书、在 Let's Encrypt
+  生产/测试（staging）环境之间切换。切换环境会改写全部 resolver 的 `caServer`，
+  并备份清空对应证书存储，重启后按新环境重新签发。
 
   应用安装时若目标根域名尚无对应 resolver，会经菜单调用同一新增流程。
 

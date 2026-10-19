@@ -73,13 +73,13 @@ ENV_FILE="${SERVICE_DIR}/.env"
 COMPOSE_FILE="${SERVICE_DIR}/docker-compose.yml"
 
 
-# ---------- 4. ACME 基础信息（邮箱与 CA 环境；已有则自动沿用） ----------
+# ---------- 4. ACME 基础信息（邮箱与 CA 环境；已有则显示并询问是否沿用） ----------
 # DNS resolver 池初始为空：首次需要签发证书的业务应用安装时引导新增，
 # 或随时执行 bash run.sh configure traefik
 printf "==========================================\n"
 printf "🔐 请配置 Let's Encrypt 基础信息（供后续 DNS resolver 使用）\n"
 printf "==========================================\n"
-collect_acme_meta || exit 1
+collect_acme_meta confirm_reuse || exit 1
 
 
 # ---------- 5. 安装基础文件 ----------
