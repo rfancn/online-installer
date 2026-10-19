@@ -83,7 +83,7 @@ collect_acme_meta || exit 1
 
 
 # ---------- 5. 安装基础文件 ----------
-mkdir -p "$CONFIG_DIR" "$LETSENCRYPT_DIR"
+mkdir -p "$CONFIG_DIR" "$LETSENCRYPT_DIR" "${SERVICE_DIR}/certs"
 cp "$SCRIPT_PATH/resource/traefik.toml" "$STATIC_CONFIG_FILE"
 cp "$SCRIPT_PATH/resource/config/dashboard.toml" "$CONFIG_DIR/dashboard.toml"
 cp "$SCRIPT_PATH/resource/docker-compose.yml" "$COMPOSE_FILE"
@@ -108,15 +108,8 @@ printf "现在添加？(y/n) [y]: "
 read -r add_choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
 case "${add_choice:-y}" in
     y|Y)
-        while true; do
-            add_dns_resolver || exit 1
-            printf "继续添加其他 resolver？(y/n) [n]: "
-            read -r again || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
-            case "${again:-n}" in
-                y|Y) continue ;;
-                *) break ;;
-            esac
-        done
+        # 菜单式循环：DNS resolver / 静态证书可混加，n 结束（与 configure 共用）
+        configure_traefik_menu || exit 1
         ;;
 esac
 

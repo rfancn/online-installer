@@ -432,6 +432,132 @@ add_dns_resolver() {
     return 0
 }
 
+# 3.5b 静态证书：预签发的 leaf 证书（CA 签/自签均可）挂载进 traefik，
+#      经 [[tls.certificates]] 按 SNI 匹配，与 ACME resolver 并存。
+#      属于静态配置：增/换证书需重启 traefik；续期=重跑同一流程替换文件。
+
+# 解析 traefik.toml 中的静态证书清单: STATIC_CERTS=("id|domains|notAfter" ...)
+# 标记行格式: # static-cert: <id> domains=<a,b> notAfter=<date>
+list_static_certs() {
+    STATIC_CERTS=()
+    local static="${TRAEFIK_HOME:-}/traefik.toml" line
+    [ -f "$static" ] || return 1
+    while IFS= read -r line; do
+        case "$line" in
+            "# static-cert: "*)
+                local id dom nd
+                id=$(printf '%s' "$line" | awk '{print $3}')
+                dom=$(printf '%s' "$line" | sed -n 's/.*domains=\([^ ]*\).*/\1/p')
+                nd=$(printf '%s' "$line" | sed -n 's/.*notAfter=\(.*\)/\1/p')
+                STATIC_CERTS+=("${id}|${dom}|${nd}")
+                ;;
+        esac
+    done < "$static"
+    [ ${#STATIC_CERTS[@]} -gt 0 ]
+}
+
+# 新增一张静态证书：路径采集 → openssl 校验（格式/密钥配对/SAN/有效期）
+# → 落盘 certs/<id>/ → 替换或追加 [[tls.certificates]] 段
+# 结果: STATIC_ADDED=1（调用方提示重启 traefik）
+add_static_cert_flow() {
+    # 校验环节依赖 openssl（主流发行版默认自带，缺则经包管理安装）
+    command -v openssl >/dev/null 2>&1 || pkg_install openssl
+    if ! command -v openssl >/dev/null 2>&1; then
+        printf "❌ 需要 openssl 校验证书，当前不可用，请先安装后重试。\n"
+        return 1
+    fi
+    [ -n "$TRAEFIK_HOME" ] && [ -f "$TRAEFIK_HOME/traefik.toml" ] || {
+        printf "❌ 尚未安装 traefik，无法添加静态证书。\n"; return 1; }
+
+    local cert_path key_path
+    printf "请输入证书文件路径（fullchain，绝对路径）: "
+    read -r cert_path || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    printf "请输入私钥文件路径（privkey，绝对路径）: "
+    read -r key_path || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+
+    if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
+        printf "❌ 文件不存在，请检查路径。\n"; return 1
+    fi
+    if ! openssl x509 -in "$cert_path" -noout 2>/dev/null; then
+        printf "❌ %s 不是有效的 X.509 证书。\n" "$cert_path"; return 1
+    fi
+
+    # 解析 SAN（退化到 subject CN）与有效期
+    local domains cn
+    domains=$(openssl x509 -in "$cert_path" -noout -ext subjectAltName 2>/dev/null \
+              | grep -o 'DNS:[^,]*' | sed 's/DNS://; s/^ *//; s/ *$//' | paste -sd, -)
+    if [ -z "$domains" ]; then
+        cn=$(openssl x509 -in "$cert_path" -noout -subject | sed -E 's/.*CN *= *//')
+        domains="$cn"
+    fi
+    local not_after
+    not_after=$(openssl x509 -in "$cert_path" -noout -enddate | cut -d= -f2)
+
+    # 密钥配对校验（x509 与 pkey 公钥摘要一致，兼容 RSA/EC）
+    local cp1 cp2
+    cp1=$(openssl x509 -in "$cert_path" -noout -pubkey | sha256sum | cut -d' ' -f1)
+    cp2=$(openssl pkey -in "$key_path" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1)
+    if [ -z "$cp2" ] || [ "$cp1" != "$cp2" ]; then
+        printf "❌ 证书与私钥不匹配，已中止。\n"; return 1
+    fi
+
+    local id="${domains%%,*}"
+    printf "==========================================\n"
+    printf "📜 静态证书预览:\n"
+    printf "   标识(id): %s\n" "$id"
+    printf "   SAN 域名: %s\n" "$domains"
+    printf "   到期时间: %s\n" "$not_after"
+    printf "==========================================\n"
+    local overw=""
+    grep -qF "# static-cert: $id " "$TRAEFIK_HOME/traefik.toml" 2>/dev/null && overw="（同 id 将覆盖旧证书）"
+    printf "将写入 %s/certs/%s/ 并追加 tls.certificates 段%s (y/n) [y]: " "$TRAEFIK_HOME" "$id" "$overw"
+    read -r confirm || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    case "${confirm:-y}" in
+        y|Y) : ;;
+        *) printf "已取消。\n"; return 0 ;;
+    esac
+
+    mkdir -p "${TRAEFIK_HOME}/certs/${id}" || { printf "❌ 无法创建证书目录。\n"; return 1; }
+    cp "$cert_path" "${TRAEFIK_HOME}/certs/${id}/fullchain.pem" || return 1
+    cp "$key_path"  "${TRAEFIK_HOME}/certs/${id}/privkey.pem"  || return 1
+    chmod 600 "${TRAEFIK_HOME}/certs/${id}/privkey.pem"
+
+    # 同 id 旧段（标记行+3 行块）删除后重写，杜绝重复条目
+    local static="${TRAEFIK_HOME}/traefik.toml" tmp="${static}.tmp"
+    awk -v id="$id" '
+        $0 ~ "^# static-cert: "id" " { skip = 3; next }
+        skip > 0 { skip--; next }
+        { print }
+    ' "$static" > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$static" || return 1
+    printf '\n# static-cert: %s domains=%s notAfter=%s\n[[tls.certificates]]\n  certFile = "/etc/traefik/certs/%s/fullchain.pem"\n  keyFile = "/etc/traefik/certs/%s/privkey.pem"\n' \
+        "$id" "$domains" "$not_after" "$id" "$id" >> "$static" || return 1
+
+    STATIC_ADDED=1
+    printf "✅ 静态证书已登记（id: %s）。⚠️ [[tls.certificates]] 属静态配置，需重启 traefik 生效。\n" "$id"
+    return 0
+}
+
+# traefik 证书源管理菜单（install 5b 与 configure.sh 共用）：
+# 循环添加 DNS resolver / 静态证书，n 结束；变更标记经 RESOLVER_ADDED/STATIC_ADDED 返回
+configure_traefik_menu() {
+    local choice
+    while true; do
+        printf "🧰 选择要添加的证书来源（可多次）:\n"
+        printf "  1) DNS resolver（ACME 自动签发，需 DNS 提供商凭据）\n"
+        printf "  2) 静态证书（预签发的证书文件，按 SNI 匹配）\n"
+        printf "  n) 完成\n"
+        printf "请输入 (1/2/n) [n]: "
+        read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+        case "$choice" in
+            1) add_dns_resolver ;;
+            2) add_static_cert_flow ;;
+            n|N|"") return 0 ;;
+            *) printf "❌ 无效输入 '%s'。\n" "$choice" ;;
+        esac
+    done
+}
+
 # 选择证书 resolver：列出既有池 + 末尾「新增 resolver」
 # 参数: $1 = 通配模式的根域名（只列出 <该根域名>@* 的 resolver，并以其为新增默认）；
 #       为空 = 精确域名模式，列出全部（须自行确认所选提供商托管该域名 NS）
@@ -618,11 +744,48 @@ setup_app_certificate() {
         printf "   请先执行: bash run.sh install traefik\n"
         return 1
     fi
-    list_traefik_resolvers || { printf "ℹ️  traefik resolver 池为空，本次将引导新增 DNS resolver。\n"; RESOLVER_POOL=(); }
+    RESOLVER_ADDED=0
+    choose_cert_source || return 1
 
+    list_traefik_resolvers || { printf "ℹ️  traefik resolver 池为空，本次将引导新增 DNS resolver。\n"; RESOLVER_POOL=(); }
     choose_app_domain || return 1
+
+    if [ "$CERT_MODE" = static ]; then
+        # 静态路线：不绑 resolver、不下发通配声明；labels 空值被 Traefik 忽略，
+        # TLS 握手按 SNI 命中 [[tls.certificates]] 预置证书
+        APP_RESOLVER=""
+        CERT_MAIN=""
+        CERT_SANS=""
+        printf "✅ 使用静态证书：请确认 traefik 预置证书的 SAN 覆盖 %s，否则将回退自签默认证书。\n" "$APP_HOST"
+        return 0
+    fi
     # 通配模式按根域名过滤 resolver 并以其为新增默认；精确模式传空列出全部
     choose_or_add_resolver "$SELECTED_ROOT_DOMAIN" || return 1
+    return 0
+}
+
+# 应用证书方式选择：ACME 自动签发（resolver）或 静态证书（SNI 匹配已预置证书）
+# 结果: CERT_MODE=auto|static
+choose_cert_source() {
+    local choice e
+    printf "==========================================\n"
+    printf "📜 请选择本应用的证书方式\n"
+    printf "==========================================\n"
+    printf "  1) 自动签发（ACME DNS-01，从 resolver 池选择/新增）\n"
+    printf "  2) 静态证书（使用 traefik 已预置证书，按 SNI 匹配）\n"
+    if list_static_certs; then
+        printf "   现有静态证书:\n"
+        for e in "${STATIC_CERTS[@]}"; do
+            printf "     - %s（domains: %s，到期 %s）\n" "${e%%|*}" "$(printf '%s' "$e" | cut -d'|' -f2)" "$(printf '%s' "$e" | cut -d'|' -f3)"
+        done
+    fi
+    printf "请输入序号 (1/2) [1]: "
+    read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    case "${choice:-1}" in
+        1) CERT_MODE="auto" ;;
+        2) CERT_MODE="static" ;;
+        *) printf "❌ 无效输入 '%s'。\n" "$choice"; return 1 ;;
+    esac
     return 0
 }
 

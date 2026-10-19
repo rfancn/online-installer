@@ -37,6 +37,14 @@ ACME 统一走 **DNS-01**，resolver 池只包含 DNS resolver。两层职责分
 
   应用安装时若目标根域名尚无对应 resolver，会经菜单调用同一新增流程。
 
+- **静态证书（与 ACME 并存）**：`bash run.sh configure traefik` 菜单选"新增静态
+  证书"，提供 fullchain/privkey 绝对路径——安装器用 openssl 校验证书格式、
+  密钥配对并解析 SAN/有效期，落盘 `certs/<id>/` 并在 traefik.toml 追加
+  `[[tls.certificates]]`（按 SNI 匹配，id=证书首个域名，同 id 重加即覆盖续期）。
+  注意：与 resolver 同属**静态配置，变更后需重启 traefik**；静态证书不会自动续签，
+  到期前重跑该流程替换即可。应用安装时证书方式选"静态证书"，则
+  certResolver/通配声明置空（labels 空值被忽略），握手命中预置证书。
+
 - **域名声明（动态，随应用走）**：业务应用（airpress、filebrowser 等）安装时
   选择两种域名形态之一，写入应用自己的 compose labels，启动即自动触发签发
   （file provider 热加载，**无需重启 traefik**）：

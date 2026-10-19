@@ -28,20 +28,30 @@ fi
 printf "==========================================\n"
 printf "🔧 Traefik: %s\n" "$TRAEFIK_HOME"
 if list_traefik_resolvers; then
-    printf "🔐 当前 resolver 池:\n"
+    printf "🔐 resolver 池（自动签发）:\n"
     for entry in "${RESOLVER_POOL[@]}"; do
         printf "   - %s（provider: %s）\n" "${entry%%|*}" "${entry##*|}"
     done
 else
     printf "🔐 resolver 池为空\n"
 fi
+if list_static_certs; then
+    printf "📜 静态证书池（SNI 匹配）:\n"
+    for e in "${STATIC_CERTS[@]}"; do
+        printf "   - %s（domains: %s，到期 %s）\n" "${e%%|*}" "$(printf '%s' "$e" | cut -d'|' -f2)" "$(printf '%s' "$e" | cut -d'|' -f3)"
+    done
+else
+    printf "📜 静态证书池为空\n"
+fi
 printf "==========================================\n"
 
-add_dns_resolver || exit 1
+configure_traefik_menu || exit 1
 
-if [ "${RESOLVER_ADDED:-0}" = 1 ]; then
+if [ "${RESOLVER_ADDED:-0}" = 1 ] || [ "${STATIC_ADDED:-0}" = 1 ]; then
     printf -- "----------------------------------------\n"
-    printf "✅ resolver %s 已写入 %s/traefik.toml\n" "$APP_RESOLVER" "$TRAEFIK_HOME"
-    printf "⚠️  静态配置变更需重启生效：cd %s && docker compose restart\n" "$TRAEFIK_HOME"
+    printf "✅ 证书来源配置已更新（resolver: %s / 静态证书: %s）\n" \
+        "$([ "${RESOLVER_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')" \
+        "$([ "${STATIC_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')"
+    printf "⚠️  均为静态配置变更，需重启生效：cd %s && docker compose restart\n" "$TRAEFIK_HOME"
 fi
 exit 0
