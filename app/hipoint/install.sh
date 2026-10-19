@@ -153,7 +153,9 @@ WX_HOST="${WX_SUB}.${ROOT_DOMAIN}"
 
 # 增加租户子域名：可添加多个，每个生成 Host 路由并把子域名写入 hd-sub-domain
 TENANT_SUBS=()
-printf "增加租户子域名（可添加多个，直接回车结束）:\n"
+printf "==========================================\n"
+printf "🧩 增加租户子域名（可添加多个，直接回车结束）\n"
+printf "==========================================\n"
 while true; do
     printf "增加租户子域名（回车结束）: "
     IFS= read -r tsub || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
