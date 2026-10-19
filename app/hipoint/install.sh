@@ -59,15 +59,24 @@ derive_sub() {
 }
 
 # 交互读取静态服务二级域名（输出到 stdout，提示走 stderr）
+# 参数: $1=提示文案 $2=默认值（为空则必须输入，不允许直接回车）
 prompt_subdomain() {
     local label="$1" default="$2" d
     while true; do
-        printf "%s [%s]: " "$label" "$default" >&2
+        if [ -n "$default" ]; then
+            printf "%s [%s]: " "$label" "$default" >&2
+        else
+            printf "%s: " "$label" >&2
+        fi
         IFS= read -r d || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+        if [ -z "$d" ] && [ -z "$default" ]; then
+            printf "❌ 二级域名不能为空，请重新输入。\n" >&2
+            continue
+        fi
         d="${d:-$default}"
         case "$d" in
-            ''|*[\"\'\ \`\$\*\.]*)
-                printf "❌ 二级域名不能为空，且不能包含空格、引号、反引号、\$、* 与 .。\n" >&2
+            *[\"\'\ \`\$\*\.]*)
+                printf "❌ 二级域名不能包含空格、引号、反引号、\$、* 与 .。\n" >&2
                 continue ;;
         esac
         printf '%s' "$d"
@@ -137,15 +146,18 @@ printf "==========================================\n"
 printf "🧩 静态服务配置（根域名: %s）\n" "$ROOT_DOMAIN"
 printf "==========================================\n"
 
-ADMIN_SUB=$(prompt_subdomain "admin 二级域名" "admin") || exit 1
-ADMIN_PORT=$(prompt_port "admin 监听端口" "8080") || exit 1
+# 静态服务默认端口从 8080 起依次递增
+STATIC_PORT_BASE=8080
 
-WX_SUB=$(prompt_subdomain "wx 二级域名" "wx") || exit 1
+ADMIN_SUB=$(prompt_subdomain "PC管理端子域名" "") || exit 1
+ADMIN_PORT=$(prompt_port "PC管理端端口" "$STATIC_PORT_BASE") || exit 1
+
+WX_SUB=$(prompt_subdomain "微信回调子域名" "") || exit 1
 while [ "$WX_SUB" = "$ADMIN_SUB" ]; do
-    printf "❌ wx 二级域名不能与 admin 相同（%s），请重新输入。\n" "$ADMIN_SUB" >&2
-    WX_SUB=$(prompt_subdomain "wx 二级域名" "wx") || exit 1
+    printf "❌ 微信回调子域名不能与 PC管理端子域名相同（%s），请重新输入。\n" "$ADMIN_SUB" >&2
+    WX_SUB=$(prompt_subdomain "微信回调子域名" "") || exit 1
 done
-WX_PORT=$(prompt_port "wx 监听端口" "8081") || exit 1
+WX_PORT=$(prompt_port "微信回调端口" "$((STATIC_PORT_BASE + 1))") || exit 1
 
 # 主域名即 admin 静态服务域名（admin 二级域名可修改）
 MAIN_HOST="${ADMIN_SUB}.${ROOT_DOMAIN}"
