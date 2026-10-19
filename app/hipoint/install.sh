@@ -3,10 +3,11 @@
 # ================= app/hipoint/install.sh =================
 # hipoint：纯 Traefik 反向代理接入（本应用不起自己的容器）。做两件事：
 #   1) 已装 traefik 动态目录生成 hipoint.toml（file provider，watch 热加载）：
-#      - 主域名与租户子域名的根路径 / `/admin` → PC 管理端（StripPrefix /admin）
-#      - 主域名与租户子域名的其余请求 → API 服务（StripPrefix /api 或第一段路径）
-#      - 微信回调子域名 → API 服务（原路径，hd-sub-domain=子域名）
-#   2) 生成 PC 管理端 nginx 配置存 $SERVICE_DIR/nginx，软链到 /etc/nginx/conf.d。
+#      - 仅处理 xxx.根域名 的请求，xxx 作为 hd-sub-domain；主域名本身不转发
+#      - 子域名的根路径 / `/admin` → PC 管理端（剥离第一段）
+#      - 子域名的其余请求 → API 服务（剥离第一段）
+#      - 微信回调子域名 → 微信回调静态服务（原路径，不剥离，带 hd-sub-domain）
+#   2) 生成 PC 管理端与微信回调的 nginx 配置存 $SERVICE_DIR/nginx，软链到 /etc/nginx/conf.d。
 # 翻译自原 nginx：Host/X-Forwarded-For 由 Traefik 默认透传不补；X-Real-IP 沿用
 # 仓库既有策略省略（应用统一读 XFF）；Cache-Control/SPA 回退由 nginx 提供不重复设。
 
@@ -108,7 +109,7 @@ printf "🚀 开始安装 hipoint（Traefik 反向代理接入）\n"
 
 # ---------- 2. 主域名（根域名）+ 证书签发方式/渠道 ----------
 printf "==========================================\n"
-printf "🌐 hipoint 主域名（根域名，所有服务共用，如 example.com）\n"
+printf "🌐 hipoint 主域名（根域名，用于派生子域名与证书，如 example.com）\n"
 printf "==========================================\n"
 if [ -z "$TRAEFIK_HOME" ] || [ ! -f "$TRAEFIK_HOME/traefik.toml" ]; then
     printf "❌ 尚未安装 traefik（%s 中无 TRAEFIK_HOME 或未找到其配置）。\n" "$INSTALLER_CONF"
@@ -146,21 +147,33 @@ printf "==========================================\n"
 printf "🧩 服务配置（主域名: %s）\n" "$ROOT_DOMAIN"
 printf "==========================================\n"
 
-ADMIN_PORT=$(prompt_port "PC管理端端口" "8080") || exit 1
-API_PORT=$(prompt_port "API端口" "1000") || exit 1
+# 静态服务默认端口从 8080 起依次递增
+STATIC_PORT_BASE=8080
+
+ADMIN_PORT=$(prompt_port "PC管理端端口" "$STATIC_PORT_BASE") || exit 1
 WX_SUB=$(prompt_subdomain "微信回调子域名" "") || exit 1
+WX_PORT=$(prompt_port "微信回调端口" "$((STATIC_PORT_BASE + 1))") || exit 1
+API_PORT=$(prompt_port "API端口" "1000") || exit 1
 WX_HOST="${WX_SUB}.${ROOT_DOMAIN}"
 
-# 增加租户子域名：可添加多个，每个生成 Host 路由并把子域名写入 hd-sub-domain
+# 租户子域名：主域名不承载业务，至少需要一个；可添加多个，每个生成 Host 路由并把子域名写入 hd-sub-domain
 TENANT_SUBS=()
 printf "==========================================\n"
-printf "🧩 增加租户子域名（可添加多个，直接回车结束）\n"
+printf "🧩 租户子域名（至少一个，可添加多个，输入空行结束）\n"
 printf "==========================================\n"
 while true; do
-    printf "增加租户子域名（回车结束）: "
+    if [ ${#TENANT_SUBS[@]} -eq 0 ]; then
+        printf "租户子域名（必填）: "
+    else
+        printf "继续增加租户子域名（回车结束）: "
+    fi
     IFS= read -r tsub || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
     tsub=$(trim "$tsub")
-    [ -z "$tsub" ] && break
+    if [ -z "$tsub" ]; then
+        [ ${#TENANT_SUBS[@]} -eq 0 ] || break
+        printf "❌ 至少需要一个租户子域名，请重新输入。\n"
+        continue
+    fi
     case "$tsub" in
         *[\"\'\ \`\$\*\.]*)
             printf "❌ 二级域名不能包含空格、引号、反引号、\$、* 与 .。\n"
@@ -180,9 +193,12 @@ while true; do
 done
 
 ADMIN_BACKEND="http://host.docker.internal:${ADMIN_PORT}"
+WX_BACKEND="http://host.docker.internal:${WX_PORT}"
 API_BACKEND="http://host.docker.internal:${API_PORT}"
 ADMIN_LOG_PREFIX="admin.${ROOT_DOMAIN}"
+WX_LOG_PREFIX="wx.${ROOT_DOMAIN}"
 ADMIN_ROOT="/usr/share/nginx/html/admin"
+WX_ROOT="/usr/share/nginx/html/wx"
 
 # 租户子域名：根路径/`/admin` → PC 管理端，其余路径剥离第一段 → API + hd-sub-domain
 TENANT_HOSTS=()
@@ -190,11 +206,12 @@ for tsub in "${TENANT_SUBS[@]}"; do
     TENANT_HOSTS+=("${tsub}.${ROOT_DOMAIN}")
 done
 
-printf "✅ PC管理端: http://%s/admin/ → %s（剥离 /admin）\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND"
-printf "✅ API 服务: http://%s/api/ → %s（剥离 /api）\n" "$ROOT_DOMAIN" "$API_BACKEND"
-printf "✅ 微信回调: https://%s/ → %s（原路径，hd-sub-domain=%s）\n" "$WX_HOST" "$API_BACKEND" "$WX_SUB"
+printf "ℹ️  主域名 %s 本身不转发业务请求，仅子域名参与路由。\n" "$ROOT_DOMAIN"
+printf "✅ PC管理端: https://<租户>.%s/ 或 /admin/ → %s（剥离第一段）\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND"
+printf "✅ API 服务: https://<租户>.%s/api/ 及其余路径 → %s（剥离第一段，hd-sub-domain=租户）\n" "$ROOT_DOMAIN" "$API_BACKEND"
+printf "✅ 微信回调: https://%s/ → %s（原路径，不剥离，hd-sub-domain=%s）\n" "$WX_HOST" "$WX_BACKEND" "$WX_SUB"
 for h in "${TENANT_HOSTS[@]}"; do
-    printf "✅ 租户: https://%s/ → PC 管理端；其余路径剥离第一段 → API（hd-sub-domain=%s）\n" \
+    printf "✅ 租户: https://%s/ 或 /admin/ → PC 管理端；其余路径剥离第一段 → API（hd-sub-domain=%s）\n" \
         "$h" "$(derive_sub "$h")"
 done
 
@@ -223,83 +240,45 @@ render_toml() {
     printf '  [[http.services.hipoint-pcadmin-svc.loadBalancer.servers]]\n'
     printf '    url = "%s"\n\n' "$(toml_escape "$ADMIN_BACKEND")"
 
-    printf '# --- 路径前缀剥离 ---\n'
-    printf '# /api 固定前缀\n'
-    printf '[http.middlewares.hipoint-api-stripprefix.stripprefix]\n'
-    printf '  prefixes = ["/api"]\n\n'
-    printf '# /admin 固定前缀\n'
-    printf '[http.middlewares.hipoint-pcadmin-stripprefix.stripprefix]\n'
-    printf '  prefixes = ["/admin"]\n\n'
-    printf '# 其余请求：剥离 URL 第一段\n'
+    printf '# --- 微信回调后端 ---\n'
+    printf '[http.services.hipoint-wx-svc.loadBalancer]\n'
+    printf '  [[http.services.hipoint-wx-svc.loadBalancer.servers]]\n'
+    printf '    url = "%s"\n\n' "$(toml_escape "$WX_BACKEND")"
+
+    printf '# --- 路径前缀剥离：统一剥离 URL 第一段（微信回调子域名除外） ---\n'
     printf '[http.middlewares.hipoint-firstpath-strip.stripPrefixRegex]\n'
     printf '  regex = "^/[^/]+"\n\n'
 
-    printf '# --- PC 管理端（主域名）：根路径与 /admin → PC，剥离 /admin ---\n'
-    printf '[http.routers.hipoint-pcadmin]\n'
-    printf '  rule = "Host(`%s`) && (Path(`/`) || Path(`/admin`) || PathPrefix(`/admin/`))"\n' "$ROOT_DOMAIN"
-    printf '  entryPoints = ["websecure"]\n'
-    printf '  service = "hipoint-pcadmin-svc"\n'
-    printf '  middlewares = ["hipoint-pcadmin-stripprefix"]\n'
-    printf '  priority = 200\n'
-    printf '  [http.routers.hipoint-pcadmin.tls]\n'
-    [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
-    tls_domains_block "http.routers.hipoint-pcadmin"
-    printf '\n'
-
-    printf '# --- API（主域名 /api）：剥离 /api 前缀 ---\n'
-    printf '[http.routers.hipoint-api-main]\n'
-    printf '  rule = "Host(`%s`) && (Path(`/api`) || PathPrefix(`/api/`))"\n' "$ROOT_DOMAIN"
-    printf '  entryPoints = ["websecure"]\n'
-    printf '  service = "hipoint-api-svc"\n'
-    printf '  middlewares = ["hipoint-api-stripprefix"]\n'
-    printf '  priority = 150\n'
-    printf '  [http.routers.hipoint-api-main.tls]\n'
-    [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
-    tls_domains_block "http.routers.hipoint-api-main"
-    printf '\n'
-
-    printf '# --- API（主域名兜底）：剥离 URL 第一段 ---\n'
-    printf '[http.routers.hipoint-api-root-fallback]\n'
-    printf '  rule = "Host(`%s`)"\n' "$ROOT_DOMAIN"
-    printf '  entryPoints = ["websecure"]\n'
-    printf '  service = "hipoint-api-svc"\n'
-    printf '  middlewares = ["hipoint-firstpath-strip"]\n'
-    printf '  priority = 100\n'
-    printf '  [http.routers.hipoint-api-root-fallback.tls]\n'
-    [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
-    tls_domains_block "http.routers.hipoint-api-root-fallback"
-    printf '\n'
-
-    # 微信回调子域名：所有路径原样转发 API（不剥离）
+    # 微信回调子域名：所有路径原样转发 wx 静态服务（不剥离），子域名写入 hd-sub-domain
     local wx_s
     wx_s=$(slug "$WX_HOST")
-    printf '# --- 微信回调子域名：原路径 → API（hd-sub-domain=%s）---\n' "$WX_SUB"
-    printf '[http.middlewares.hipoint-api-hdr-%s.headers]\n' "$wx_s"
+    printf '# --- 微信回调子域名：原路径 → wx 静态服务（不剥离，hd-sub-domain=%s） ---\n' "$WX_SUB"
+    printf '[http.middlewares.hipoint-hdr-%s.headers]\n' "$wx_s"
     printf '  customRequestHeaders = { "hd-sub-domain" = "%s" }\n\n' "$(toml_escape "$WX_SUB")"
     printf '[http.routers.hipoint-callback]\n'
     printf '  rule = "Host(`%s`)"\n' "$WX_HOST"
     printf '  entryPoints = ["websecure"]\n'
-    printf '  service = "hipoint-api-svc"\n'
-    printf '  middlewares = ["hipoint-api-hdr-%s"]\n' "$wx_s"
+    printf '  service = "hipoint-wx-svc"\n'
+    printf '  middlewares = ["hipoint-hdr-%s"]\n' "$wx_s"
     printf '  priority = 200\n'
     printf '  [http.routers.hipoint-callback.tls]\n'
     [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
     tls_domains_block "http.routers.hipoint-callback"
     printf '\n'
 
-    # 租户子域名：根路径/`/admin` → PC；其余路径剥离第一段 → API
+    # 租户子域名：子域名作为 hd-sub-domain；根路径/`/admin` → PC，其余剥离第一段 → API
     local h s sub
     for h in "${TENANT_HOSTS[@]}"; do
         s=$(slug "$h"); sub=$(derive_sub "$h")
-        printf '# --- 租户: %s（根路径/`/admin` → PC；其余剥离第一段 → API，hd-sub-domain=%s）---\n' "$h" "$sub"
-        printf '[http.middlewares.hipoint-api-hdr-%s.headers]\n' "$s"
+        printf '# --- 租户: %s（hd-sub-domain=%s；根路径/`/admin` → PC；其余剥离第一段 → API）---\n' "$h" "$sub"
+        printf '[http.middlewares.hipoint-hdr-%s.headers]\n' "$s"
         printf '  customRequestHeaders = { "hd-sub-domain" = "%s" }\n\n' "$(toml_escape "$sub")"
 
         printf '[http.routers.hipoint-pcadmin-%s]\n' "$s"
         printf '  rule = "Host(`%s`) && (Path(`/`) || Path(`/admin`) || PathPrefix(`/admin/`))"\n' "$h"
         printf '  entryPoints = ["websecure"]\n'
         printf '  service = "hipoint-pcadmin-svc"\n'
-        printf '  middlewares = ["hipoint-pcadmin-stripprefix"]\n'
+        printf '  middlewares = ["hipoint-firstpath-strip", "hipoint-hdr-%s"]\n' "$s"
         printf '  priority = 200\n'
         printf '  [http.routers.hipoint-pcadmin-%s.tls]\n' "$s"
         [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
@@ -310,7 +289,7 @@ render_toml() {
         printf '  rule = "Host(`%s`)"\n' "$h"
         printf '  entryPoints = ["websecure"]\n'
         printf '  service = "hipoint-api-svc"\n'
-        printf '  middlewares = ["hipoint-firstpath-strip", "hipoint-api-hdr-%s"]\n' "$s"
+        printf '  middlewares = ["hipoint-firstpath-strip", "hipoint-hdr-%s"]\n' "$s"
         printf '  priority = 100\n'
         printf '  [http.routers.hipoint-api-%s.tls]\n' "$s"
         [ -n "$APP_RESOLVER" ] && printf '    certResolver = "%s"\n' "$APP_RESOLVER"
@@ -332,9 +311,29 @@ cp "${SERVICE_DIR}/hipoint.toml" "${DYNAMIC_DIR}/hipoint.toml" || {
 printf "✅ 动态配置已写入: %s（留档: %s/hipoint.toml）\n" "${DYNAMIC_DIR}/hipoint.toml" "$SERVICE_DIR"
 
 
-# ---------- 6. PC 管理端 nginx 配置：生成并软链到 /etc/nginx/conf.d ----------
-NGINX_SRC="${SERVICE_DIR}/nginx/hipoint-pcadmin.conf"
-NGINX_LINK="/etc/nginx/conf.d/hipoint-pcadmin.conf"
+# ---------- 6. 静态服务 nginx 配置：PC 管理端与微信回调各生成一个 server ----------
+# 参数: $1=服务名 $2=监听端口 $3=server_name $4=日志前缀 $5=静态根目录
+gen_nginx_conf() {
+    local name="$1" port="$2" host="$3" log_prefix="$4" root_dir="$5"
+    local src="${SERVICE_DIR}/nginx/hipoint-${name}.conf"
+    local link="/etc/nginx/conf.d/hipoint-${name}.conf"
+    sed \
+        -e "s|__SOURCE__|$(sed_escape "$src")|g" \
+        -e "s|__NGINX_PORT__|$(sed_escape "$port")|g" \
+        -e "s|__SERVER_NAME__|$(sed_escape "$host")|g" \
+        -e "s|__LOG_PREFIX__|$(sed_escape "$log_prefix")|g" \
+        -e "s|__ROOT_DIR__|$(sed_escape "$root_dir")|g" \
+        "${SCRIPT_PATH}/resource/nginx/admin.conf.tpl" > "$src" \
+        || { printf "❌ 生成 nginx 配置失败: %s\n" "$src"; return 1; }
+    printf "✅ nginx 配置已生成: %s\n" "$src"
+    # ln -sfn 覆盖旧链接；写 /etc/nginx 需提权，经 pkg_exec（sudo/su）
+    if pkg_exec ln -sfn "$src" "$link"; then
+        printf "✅ 已软链: %s → %s\n" "$link" "$src"
+    else
+        printf "❌ 软链到 %s 失败，请手动执行: sudo ln -sfn '%s' '%s'\n" "$link" "$src" "$link"
+        return 1
+    fi
+}
 
 command -v nginx >/dev/null 2>&1 || {
     printf "⚠️  未检测到 nginx，正在尝试安装...\n"
@@ -343,36 +342,23 @@ command -v nginx >/dev/null 2>&1 || {
 if ! command -v nginx >/dev/null 2>&1; then
     printf "❌ nginx 仍不可用，已跳过 nginx 静态配置落地（Traefik 路由已就绪）。\n"
     printf "   装好 nginx 后按模板 %s/resource/nginx/admin.conf.tpl 生成配置：\n" "$SCRIPT_PATH"
-    printf "   %s:%s → %s（Traefik 剥离 /admin）\n" "$ROOT_DOMAIN" "$ADMIN_PORT" "$ADMIN_ROOT"
+    printf "   - PC 管理端: *.%s:%s → %s\n" "$ROOT_DOMAIN" "$ADMIN_PORT" "$ADMIN_ROOT"
+    printf "   - 微信回调:  %s:%s → %s\n" "$WX_HOST" "$WX_PORT" "$WX_ROOT"
 else
     mkdir -p "${SERVICE_DIR}/nginx"
-    sed \
-        -e "s|__SOURCE__|$(sed_escape "$NGINX_SRC")|g" \
-        -e "s|__NGINX_PORT__|$(sed_escape "$ADMIN_PORT")|g" \
-        -e "s|__SERVER_NAME__|$(sed_escape "$ROOT_DOMAIN")|g" \
-        -e "s|__LOG_PREFIX__|$(sed_escape "$ADMIN_LOG_PREFIX")|g" \
-        -e "s|__ROOT_DIR__|$(sed_escape "$ADMIN_ROOT")|g" \
-        "${SCRIPT_PATH}/resource/nginx/admin.conf.tpl" > "$NGINX_SRC" \
-        || { printf "❌ 生成 nginx 配置失败。\n"; exit 1; }
-    printf "✅ nginx 配置已生成: %s\n" "$NGINX_SRC"
-    # ln -sfn 覆盖旧链接；写 /etc/nginx 需提权，经 pkg_exec（sudo/su）
-    if pkg_exec ln -sfn "$NGINX_SRC" "$NGINX_LINK"; then
-        printf "✅ 已软链: %s → %s\n" "$NGINX_LINK" "$NGINX_SRC"
-    else
-        printf "❌ 软链到 %s 失败，请手动执行: sudo ln -sfn '%s' '%s'\n" "$NGINX_LINK" "$NGINX_SRC" "$NGINX_LINK"
-    fi
+    gen_nginx_conf pcadmin "$ADMIN_PORT" "*.${ROOT_DOMAIN}" "$ADMIN_LOG_PREFIX" "$ADMIN_ROOT" || exit 1
+    gen_nginx_conf wx      "$WX_PORT"    "$WX_HOST"    "$WX_LOG_PREFIX"    "$WX_ROOT"    || exit 1
 fi
 
 
 # ---------- 7. 收尾提示 ----------
 printf -- "----------------------------------------\n"
-printf "PC 管理端:\n"
-printf "  - https://%s/         →  %s\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND"
-printf "  - https://%s/admin/   →  %s（剥离 /admin，root %s）\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND" "$ADMIN_ROOT"
-printf "API 服务:\n"
-printf "  - https://%s/api/     →  %s（剥离 /api）\n" "$ROOT_DOMAIN" "$API_BACKEND"
-printf "  - https://%s/<第一段>/...  →  %s（剥离第一段）\n" "$ROOT_DOMAIN" "$API_BACKEND"
-printf "  - https://%s/         →  %s（原路径，hd-sub-domain=%s，微信回调）\n" "$WX_HOST" "$API_BACKEND" "$WX_SUB"
+printf "PC 管理端（租户子域名）:\n"
+printf "  - https://<租户>.%s/ 或 /admin/  →  %s（剥离第一段，root %s）\n" "$ROOT_DOMAIN" "$ADMIN_BACKEND" "$ADMIN_ROOT"
+printf "API 服务（租户子域名）:\n"
+printf "  - https://<租户>.%s/api/ 及其余路径  →  %s（剥离第一段）\n" "$ROOT_DOMAIN" "$API_BACKEND"
+printf "微信回调:\n"
+printf "  - https://%s/  →  %s (root %s，原路径不剥离，hd-sub-domain=%s)\n" "$WX_HOST" "$WX_BACKEND" "$WX_ROOT" "$WX_SUB"
 for h in "${TENANT_HOSTS[@]}"; do
     printf "  - https://%s/ 或 /admin/ → PC；其他路径剥离第一段 → API（hd-sub-domain=%s）\n" \
         "$h" "$(derive_sub "$h")"
@@ -381,7 +367,7 @@ printf -- "----------------------------------------\n"
 
 # host.docker.internal 依赖 traefik 容器的 host-gateway 映射；已装的 traefik 若缺则须重建
 NEEDS_HOSTGW=0
-case "${API_BACKEND}${ADMIN_BACKEND}" in *host.docker.internal*) NEEDS_HOSTGW=1 ;; esac
+case "${API_BACKEND}${ADMIN_BACKEND}${WX_BACKEND}" in *host.docker.internal*) NEEDS_HOSTGW=1 ;; esac
 if [ "$NEEDS_HOSTGW" = 1 ] && ! grep -q 'host.docker.internal' "${TRAEFIK_HOME}/docker-compose.yml" 2>/dev/null; then
     printf "⚠️  后端指向宿主机，但当前 traefik 容器未映射 host.docker.internal。\n"
     printf "   请为 %s/docker-compose.yml 补 extra_hosts: [\"host.docker.internal:host-gateway\"]\n" "$TRAEFIK_HOME"
@@ -393,12 +379,14 @@ else
     printf "ℹ️  配置写入动态目录后由 Traefik watch 自动热加载，无需重启。\n"
 fi
 
-# nginx 改了配置需重载才生效；静态目录须自行放入 PC 管理端构建产物
-if command -v nginx >/dev/null 2>&1 && [ -e "$NGINX_LINK" ]; then
+# nginx 改了配置需重载才生效；静态目录须自行放入各服务构建产物
+if command -v nginx >/dev/null 2>&1 && {
+    [ -e /etc/nginx/conf.d/hipoint-pcadmin.conf ] || [ -e /etc/nginx/conf.d/hipoint-wx.conf ]
+}; then
     printf -- "----------------------------------------\n"
-    printf "🔁 PC 管理端静态服务需重载 nginx 生效：\n"
+    printf "🔁 静态服务配置需重载 nginx 生效：\n"
     printf "   sudo nginx -t && sudo systemctl reload nginx   （或 sudo nginx -s reload）\n"
-    printf "   静态目录 %s 请确认已放入 index.html 等构建产物。\n" "$ADMIN_ROOT"
+    printf "   静态目录 %s、%s 请确认已放入对应构建产物。\n" "$ADMIN_ROOT" "$WX_ROOT"
 fi
 
 echo "✅ $INSTALL_NAME 安装完成！"
