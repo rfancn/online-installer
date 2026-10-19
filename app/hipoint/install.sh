@@ -72,7 +72,7 @@ setup_app_certificate || exit 1
 MAIN_HOST="$APP_HOST"
 
 
-# ---------- 3. API 租户域名集合（主域名自带 API；通配模式可继续追加 api-only 租户） ----------
+# ---------- 3. API 租户域名集合（主域名自带 API；可继续追加同根域名的 api-only 租户） ----------
 API_HOSTS=("$MAIN_HOST")
 if [ -n "$SELECTED_ROOT_DOMAIN" ]; then
     printf "==========================================\n"
@@ -87,11 +87,11 @@ if [ -n "$SELECTED_ROOT_DOMAIN" ]; then
         validate_root_domain "$extra" || continue
         case "$extra" in
             *".${SELECTED_ROOT_DOMAIN}") API_HOSTS+=("$extra") ;;
-            *) printf "❌ 租户域名须以 .%s 结尾（否则通配证书不覆盖），请重新输入。\n" "$SELECTED_ROOT_DOMAIN" ;;
+            *) printf "❌ 租户域名须以 .%s 结尾（须与主域名同根域名），请重新输入。\n" "$SELECTED_ROOT_DOMAIN" ;;
         esac
     done
 else
-    printf "ℹ️  精确域名模式：仅主域名生成 API 路由，hd-sub-domain 取首个标签 '%s'。\n" "$(derive_sub "$MAIN_HOST")"
+    printf "ℹ️  未识别根域名：仅主域名生成 API 路由，hd-sub-domain 取首个标签 '%s'。\n" "$(derive_sub "$MAIN_HOST")"
 fi
 
 
@@ -129,7 +129,7 @@ ADMIN_ROOT="/usr/share/nginx/html/${ADMIN_SUB}"
 
 
 # ---------- 5. 动态配置生成器（可变租户数，逐段 printf 输出到 stdout） ----------
-# 通配模式才下发 [[...tls.domains]]；精确模式留空由 Traefik 按 rule 域名自动签发
+# 仅有通配证书声明时下发 [[...tls.domains]]；留空由 Traefik 按 rule 域名自动签发
 tls_domains_block() {
     local path="$1"
     [ -n "$CERT_MAIN" ] || return 0

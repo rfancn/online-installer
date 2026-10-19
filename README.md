@@ -26,8 +26,8 @@ ACME 统一走 **DNS-01**，证书签发渠道池只包含 DNS-01 渠道。两�
 
 - **证书签发渠道池（静态）**：traefik 安装时收集 ACME 邮箱与 CA 环境（必填）。
   证书签发渠道在 Dashboard/应用配置证书时按需引导新增，或随时手动添加；
-  以 **`域名@提供商`** 命名：泛域名 `*.example.com@aliyun`（同根域名下应用共享），
-  单域名 `app.example.com@aliyun`；每个"域名+提供商"一个，独立证书存储
+  以 **`根域名@提供商`** 命名（如 `example.com@aliyun`），应用按所属根域名
+  共享同一渠道；每个"根域名+提供商"一个，独立证书存储
   `letsencrypt/acme-<渠道标识>.json`（官方禁止共用）。
   Dashboard 配置时先选证书方式：**ACME 自动签发**则绑定/跳过证书签发渠道，
   **静态证书**则按 SNI 匹配预置证书。
@@ -52,15 +52,14 @@ ACME 统一走 **DNS-01**，证书签发渠道池只包含 DNS-01 渠道。两�
   Traefik 的 `certResolver`/通配声明置空（labels 空值被忽略），握手命中预置证书。
 
 - **域名声明（动态，随应用走）**：业务应用（airpress、filebrowser 等）安装时
-  选择两种域名形态之一，写入应用自己的 compose labels，启动即自动触发签发
+  直接输入应用完整域名，写入应用自己的 compose labels，启动即自动触发签发
   （file provider 热加载，**无需重启 traefik**）：
-  1. **泛域名模式**：从根域名池选择/新增根域名 + 二级域名（默认服务名），
-     声明 `*.根域名`，通配证书多应用共享；根域名池持久化在 `.installer.conf`
-     （`ROOT_DOMAINS="a.com b.com"`）；证书签发渠道名 `*.根域名@提供商`
-     （如 `*.example.com@aliyun`），菜单只显示该域名下的渠道；
-  2. **单域名模式**：直接输入完整域名（任意 TLD），证书签发渠道名
-     `完整域名@提供商`（如 `app.example.com@aliyun`），菜单只显示该域名下的
-     渠道；须自行确认所选提供商托管该域名的 DNS，DNS-01 签发单域名证书。
+  - 脚本按域名匹配根域名池中的最长后缀确定所属根域名
+    （`ROOT_DOMAINS="a.com b.com"`，持久化在 `.installer.conf`）；未命中时
+    询问确认，默认取最后两段；
+  - 按根域名匹配证书签发渠道（如 `example.com@aliyun`）；找不到匹配渠道时
+    询问是否新增；
+  - 证书按应用实际域名签发（单域名证书），不再声明泛域名。
 
 - 应用内新增证书签发渠道会修改 traefik 静态配置，应用安装结束时提示重启 traefik；
 - 尚未安装 traefik 时应用安装会报错并要求先 `bash run.sh install traefik`；

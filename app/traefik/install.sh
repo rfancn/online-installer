@@ -113,16 +113,15 @@ else
     printf "✅ 使用静态证书：请确认预置证书的 SAN 覆盖 Dashboard 访问域名，否则将回退自签默认证书。\n"
 fi
 
-# 默认访问域名推导：优先泛域名 resolver 的根域名（*.root@provider），
-# 其次根域名池第一项，最后单域名 resolver 的域名；均无则需手动输入
+# 默认访问域名推导：优先证书签发渠道的根域名（root@provider，
+# 兼容旧命名 *.root@provider），其次根域名池第一项；均无则需手动输入
 default_dash=""
-if [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == \*.*@* ]]; then
-    default_dash="traefik.${DASH_RESOLVER#\*.}"
-    default_dash="${default_dash%@*}"
+if [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == *@* ]]; then
+    dash_root="${DASH_RESOLVER%@*}"
+    dash_root="${dash_root#\*.}"
+    default_dash="traefik.${dash_root}"
 elif [ -n "$ROOT_DOMAINS" ]; then
     default_dash="traefik.${ROOT_DOMAINS%% *}"
-elif [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == *@* ]]; then
-    default_dash="traefik.${DASH_RESOLVER%@*}"
 fi
 while true; do
     if [ -n "$default_dash" ]; then

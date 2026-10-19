@@ -3,8 +3,8 @@
 # ================= app/traefik/configure.sh =================
 # traefik 运维脚本：管理证书来源
 # （新增 DNS resolver、静态证书，或切换 Let's Encrypt 生产/测试环境）。
-# resolver 命名 <域名>@<提供商>：泛域名 *.example.com@aliyun，
-# 单域名 app.example.com@aliyun；业务应用安装时可复用同一流程。
+# 证书签发渠道命名 <根域名>@<DNS服务商>（如 example.com@aliyun）；
+# 业务应用安装时可复用同一流程。
 # 入口：bash run.sh configure traefik
 
 # 使用标准的 $0 获取当前脚本的真实绝对路径

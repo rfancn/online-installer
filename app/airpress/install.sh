@@ -48,7 +48,7 @@ cp -fr resource/$THEME_NAME $TARGET_THEME_DIR
 
 
 # 2.5 证书与域名配置（方案 B：resolver 从 traefik 静态池选择或引导新增，
-#     通配/精确域名声明随本应用 labels 动态下发，自动触发签发）
+#     域名声明随本应用 labels 动态下发，自动触发签发）
 setup_app_certificate || exit 1
 sed -i "s|^\(AIRPRESS_HOST=\).*|\1$(sed_escape "$APP_HOST")|" "$TARGET_ENV_FILE"
 sed -i "s|^\(AIRPRESS_RESOLVER=\).*|\1$(sed_escape "$APP_RESOLVER")|" "$TARGET_ENV_FILE"

@@ -41,7 +41,7 @@ cp resource/$ENV_FILE $TARGET_ENV_FILE
 
 
 # 6. 证书与域名配置（方案 B：resolver 从 traefik 静态池选择或引导新增，
-#    通配/精确域名声明随本应用 labels 动态下发，自动触发签发）
+#    域名声明随本应用 labels 动态下发，自动触发签发）
 setup_app_certificate || exit 1
 sed -i "s|__FILEBROWSER_HOST__|$(sed_escape "$APP_HOST")|g" "$TARGET_ENV_FILE"
 sed -i "s|__FILEBROWSER_RESOLVER__|$(sed_escape "$APP_RESOLVER")|g" "$TARGET_ENV_FILE"
