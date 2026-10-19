@@ -40,11 +40,75 @@ TARGET_CONFIG_FILE=$SERVICE_DIR/$CONFIG_FILE
 
 cp resource/$CONFIG_FILE $TARGET_CONFIG_FILE
 
-# 安装主题
-THEME_NAME=theme-simple-corp-portal
+# 安装主题：动态获取 GitHub 组织下所有 theme* 仓库，失败时回退内置列表
+DEFAULT_THEME=theme-anatole
+FALLBACK_THEMES=(theme-anatole theme-simple-corp-portal theme-argon theme-sysummit-corp)
+THEMES=()
+if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    THEME_JSON=$(curl -fsSL --max-time 10 \
+        "https://api.github.com/users/hipoint-airpress/repos?per_page=100" 2>/dev/null || true)
+    if [ -n "$THEME_JSON" ]; then
+        mapfile -t THEMES < <(
+            printf '%s' "$THEME_JSON" \
+                | jq -r '.[].name | select(startswith("theme"))' 2>/dev/null \
+                | sort
+        )
+    fi
+fi
+if [ ${#THEMES[@]} -eq 0 ]; then
+    THEMES=("${FALLBACK_THEMES[@]}")
+    printf "ℹ️  未能从 GitHub 获取主题列表，使用内置列表。\n"
+fi
+
+# 默认选中 theme-anatole；列表中不存在时选择第一项
+DEFAULT_INDEX=0
+for i in "${!THEMES[@]}"; do
+    [ "${THEMES[$i]}" = "$DEFAULT_THEME" ] && DEFAULT_INDEX=$i
+done
+DEFAULT_CHOICE=$((DEFAULT_INDEX + 1))
+
+printf "==========================================\n"
+printf "🎨 请选择主题（仓库: https://github.com/hipoint-airpress/<主题名>）\n"
+printf "==========================================\n"
+for i in "${!THEMES[@]}"; do
+    printf "  %d) %s\n" "$((i + 1))" "${THEMES[$i]}"
+done
+printf "请输入序号 (1-%d) [%d]: " "${#THEMES[@]}" "$DEFAULT_CHOICE"
+IFS= read -r THEME_CHOICE || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
+THEME_CHOICE=${THEME_CHOICE:-$DEFAULT_CHOICE}
+case "$THEME_CHOICE" in
+    ''|*[!0-9]*)
+        printf "❌ 无效输入 '%s'，已回退为 %s。\n" "$THEME_CHOICE" "${THEMES[$((DEFAULT_CHOICE - 1))]}"
+        THEME_CHOICE=$DEFAULT_CHOICE ;;
+esac
+if [ "$THEME_CHOICE" -lt 1 ] || [ "$THEME_CHOICE" -gt "${#THEMES[@]}" ]; then
+    printf "❌ 序号超出范围，已回退为 %s。\n" "${THEMES[$((DEFAULT_CHOICE - 1))]}"
+    THEME_CHOICE=$DEFAULT_CHOICE
+fi
+THEME_NAME="${THEMES[$((THEME_CHOICE - 1))]}"
+
+command -v git >/dev/null 2>&1 || {
+    printf "⚠️  未检测到 git，正在尝试安装...\n"
+    pkg_install git
+}
+command -v git >/dev/null 2>&1 || {
+    printf "❌ git 不可用，无法下载主题。\n" >&2
+    exit 1
+}
+
 TARGET_THEME_DIR="$SERVICE_DIR/resources/template/theme"
-mkdir -p $TARGET_THEME_DIR
-cp -fr resource/$THEME_NAME $TARGET_THEME_DIR
+THEME_TMP="${TARGET_THEME_DIR}.tmp"
+mkdir -p "$SERVICE_DIR/resources/template"
+rm -rf "$THEME_TMP"
+if ! git clone --depth 1 "https://github.com/hipoint-airpress/${THEME_NAME}" "$THEME_TMP"; then
+    rm -rf "$THEME_TMP"
+    printf "❌ 主题克隆失败: https://github.com/hipoint-airpress/%s\n" "$THEME_NAME" >&2
+    exit 1
+fi
+# 成功后再替换旧主题，避免克隆失败时丢掉已有文件
+rm -rf "$TARGET_THEME_DIR"
+mv "$THEME_TMP" "$TARGET_THEME_DIR"
+printf "✅ 主题已安装: %s → %s\n" "$THEME_NAME" "$TARGET_THEME_DIR"
 
 
 # 2.5 证书与域名配置（方案 B：resolver 从 traefik 静态池选择或引导新增，
