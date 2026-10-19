@@ -28,20 +28,20 @@ if [ -n "$TRAEFIK_HOME" ] && [ -f "$TRAEFIK_HOME/traefik.toml" ]; then
     printf "==========================================\n"
     printf "🔧 Traefik 已安装于: %s\n" "$TRAEFIK_HOME"
     if list_traefik_resolvers; then
-        printf "🔐 现有 resolver 池:\n"
+        printf "🔐 现有证书签发渠道:\n"
         for entry in "${RESOLVER_POOL[@]}"; do
             printf "   - %s\n" "$entry"
         done
     fi
     printf "==========================================\n"
     printf "  1) 完全重装（覆盖配置，保留 letsencrypt 证书存储；\n"
-    printf "     如需新增 DNS resolver 请选取消后执行: bash run.sh configure traefik）\n"
+    printf "     如需新增证书签发渠道请选取消后执行: bash run.sh configure traefik）\n"
     printf "  2) 取消\n"
     printf "请输入序号 (1/2) [2]: "
     read -r mode_choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
     case "${mode_choice:-2}" in
         1) MODE="reinstall" ;;
-        *) printf "已取消。新增 DNS resolver：bash run.sh configure traefik\n"; exit 0 ;;
+        *) printf "已取消。新增证书签发渠道：bash run.sh configure traefik\n"; exit 0 ;;
     esac
 fi
 
@@ -77,7 +77,7 @@ COMPOSE_FILE="${SERVICE_DIR}/docker-compose.yml"
 # DNS resolver 池初始为空：首次需要签发证书的业务应用安装时引导新增，
 # 或随时执行 bash run.sh configure traefik
 printf "==========================================\n"
-printf "🔐 请配置 Let's Encrypt 基础信息（供后续 DNS resolver 使用）\n"
+printf "🔐 请配置 Let's Encrypt 基础信息（供后续证书签发使用）\n"
 printf "==========================================\n"
 collect_acme_meta confirm_reuse || exit 1
 
@@ -94,7 +94,7 @@ chmod 600 "$ENV_FILE"
 
 # 重装覆盖模板后，既有 DNS resolver 段被清空（证书存储文件保留）
 if [ "$MODE" = reinstall ]; then
-    printf "⚠️  重装已清空 resolver 池；DNS resolver 可经 bash run.sh configure traefik\n"
+    printf "⚠️  重装已清空证书签发渠道；可经 bash run.sh configure traefik\n"
     printf "   重新添加（同名 provider 复用原证书存储），或在应用安装时引导新增。\n"
 fi
 
@@ -169,13 +169,13 @@ sed -i "s|__DASH_BOARD_CREDENTIAL__|$(sed_escape "${DASHBOARD_USER}:${HASH}")|g"
 # Dashboard resolver 绑定：选中则替换占位符，跳过则删除整行（回退自签证书）
 if [ -n "$DASH_RESOLVER" ]; then
     sed -i "s|__DASH_RESOLVER__|$(sed_escape "$DASH_RESOLVER")|g" "$DASHBOARD_CONFIG_FILE"
-    printf "✅ Traefik Dashboard 认证配置已写入（证书 resolver: %s）！\n" "$DASH_RESOLVER"
+    printf "✅ Traefik Dashboard 认证配置已写入（证书签发渠道: %s）！\n" "$DASH_RESOLVER"
 else
     sed -i '/certResolver = "__DASH_RESOLVER__"/d' "$DASHBOARD_CONFIG_FILE"
     if [ "$CERT_MODE" = static ]; then
         printf "✅ Traefik Dashboard 配置已写入（静态证书按 SNI 匹配，未命中回退自签）！\n"
     else
-        printf "✅ Traefik Dashboard 认证配置已写入（未绑定 resolver，暂用自签证书）！\n"
+        printf "✅ Traefik Dashboard 认证配置已写入（未绑定证书签发渠道，暂用自签证书）！\n"
     fi
 fi
 
@@ -188,14 +188,14 @@ open_firewall_ports 80/tcp 443/tcp
 printf -- "----------------------------------------\n"
 printf "Dashboard:  https://%s/dashboard/\n" "$DASHBOARD_DOMAIN"
 if [ -n "$DASH_RESOLVER" ]; then
-    printf "Dashboard 证书: resolver %s\n" "$DASH_RESOLVER"
+    printf "Dashboard 证书: 证书签发渠道 %s\n" "$DASH_RESOLVER"
 else
-    printf "Dashboard 证书: 未绑定 resolver（自签兜底），可重跑本脚本或 configure 补配\n"
+    printf "Dashboard 证书: 未绑定证书签发渠道（自签兜底），可重跑本脚本或 configure 补配\n"
 fi
 printf -- "----------------------------------------\n"
 printf "下一步：cd %s && docker compose up -d\n" "$SERVICE_DIR"
-printf "ℹ️  业务应用安装时选择/新增 DNS resolver 并声明域名，签发经应用 labels\n"
-printf "   动态下发（热加载）；resolver 池变更才需重启。\n"
+printf "ℹ️  业务应用安装时选择/新增证书签发渠道并声明域名，签发经应用 labels\n"
+printf "   动态下发（热加载）；证书签发渠道变更才需重启。\n"
 printf "⚠️  请确认 %s 的 DNS 记录已指向本机（Dashboard 证书走 DNS-01）。\n" "$DASHBOARD_DOMAIN"
 
 echo "✅ $INSTALL_NAME 安装完成！"

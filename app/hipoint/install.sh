@@ -247,7 +247,7 @@ if [ "$NEEDS_HOSTGW" = 1 ] && ! grep -q 'host.docker.internal' "${TRAEFIK_HOME}/
     printf "   请为 %s/docker-compose.yml 补 extra_hosts: [\"host.docker.internal:host-gateway\"]\n" "$TRAEFIK_HOME"
     printf "   再执行: cd %s && docker compose up -d（重建 traefik，会短暂中断走它的站点）\n" "$TRAEFIK_HOME"
 elif [ "${RESOLVER_ADDED:-0}" = 1 ]; then
-    printf "⚠️  本次新增了 resolver（traefik 静态配置已变更），需重启 traefik 生效：\n"
+    printf "⚠️  本次新增了证书签发渠道（traefik 静态配置已变更），需重启 traefik 生效：\n"
     printf "   cd %s && docker compose restart\n" "$TRAEFIK_HOME"
 else
     printf "ℹ️  配置写入动态目录后由 Traefik watch 自动热加载，无需重启。\n"

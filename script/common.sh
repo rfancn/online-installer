@@ -387,7 +387,7 @@ create_resolver() {
 
     # 同名 resolver（同证书域名+同提供商）已存在则拒绝（防重复定义）
     if grep -qF "[certificatesResolvers.\"${name}\".acme]" "$static" 2>/dev/null; then
-        printf "❌ resolver %s 已存在，请直接选用。\n" "$name"
+        printf "❌ 证书签发渠道 %s 已存在，请直接选用。\n" "$name"
         return 1
     fi
 
@@ -411,7 +411,7 @@ EOF
     chmod 600 "${ldir}/acme-${name}.json"
 
     {
-        printf '\n# %s DNS 凭据（resolver: %s）\n' "$DNS_PROVIDER" "$name"
+        printf '\n# %s DNS 凭据（证书签发渠道: %s）\n' "$DNS_PROVIDER" "$name"
         local i
         for i in "${!DNS_ENV_NAMES[@]}"; do
             printf '%s=%s\n' "${DNS_ENV_NAMES[$i]}" "${DNS_ENV_VALUES[$i]}"
@@ -431,7 +431,7 @@ EOF
 add_dns_resolver() {
     local rd="${1:-}" root="" name entry
     if [ -z "$rd" ]; then
-        printf "请输入该 resolver 关联的根域名（如 example.com）: "
+        printf "请输入该证书签发渠道关联的根域名（如 example.com）: "
         read -r rd || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
         validate_root_domain "$rd" || return 1
         # traefik 池按泛域名命名，供该根域名下所有应用共享
@@ -447,7 +447,7 @@ add_dns_resolver() {
     list_traefik_resolvers 2>/dev/null || true
     for entry in "${RESOLVER_POOL[@]}"; do
         if [ "${entry%%|*}" = "$name" ]; then
-            printf "ℹ️  resolver %s 已存在，直接复用（无需重启）。\n" "$name"
+            printf "ℹ️  证书签发渠道 %s 已存在，直接复用（无需重启）。\n" "$name"
             APP_RESOLVER="$name"
             RESOLVER_ADDED=0
             return 0
@@ -464,7 +464,7 @@ add_dns_resolver() {
         for rd_pool in $ROOT_DOMAINS; do [ "$rd_pool" = "$root" ] && seen=1; done
         [ -n "$seen" ] || save_global_root_domains $ROOT_DOMAINS "$root" || return 1
     fi
-    printf "✅ 已新增 resolver %s（域名 %s，provider: %s）\n" "$APP_RESOLVER" "$rd" "$DNS_PROVIDER"
+    printf "✅ 已新增证书签发渠道 %s（域名 %s，DNS 服务商: %s）\n" "$APP_RESOLVER" "$rd" "$DNS_PROVIDER"
     return 0
 }
 
@@ -633,7 +633,7 @@ switch_acme_ca() {
     done
 
     CA_CHANGED=1
-    printf "✅ 已切换为%s环境，并备份清空 %d 个 resolver 的证书存储。\n" "$label" "$count"
+    printf "✅ 已切换为%s环境，并备份清空 %d 个证书签发渠道的证书存储。\n" "$label" "$count"
     printf "⚠️  需重启 traefik 生效；重启后将按新环境重新签发证书。\n"
     return 0
 }
@@ -672,9 +672,13 @@ choose_or_add_resolver() {
     local rd="${1:-}" allow_skip="${2:-}"
     printf "==========================================\n"
     if [ -n "$rd" ]; then
-        printf "🔐 为域名 %s 选择证书 resolver（命名: 域名@提供商）\n" "$rd"
+        printf "🔐 请为域名 %s 选择证书签发渠道\n" "$rd"
+        printf "   证书签发渠道由 根域名@DNS服务商 标识\n"
+        printf "   本域名对应标识: %s@<DNS服务商>\n" "$rd"
     else
-        printf "🔐 请选择证书签发 resolver（须托管该域名 DNS 的提供商）\n"
+        printf "🔐 请选择证书签发渠道\n"
+        printf "   证书签发渠道由 根域名@DNS服务商 标识\n"
+        printf "   泛域名示例: *.example.com@aliyun；单域名示例: app.example.com@aliyun\n"
     fi
     printf "==========================================\n"
     local i choice entry shown=0
@@ -697,13 +701,13 @@ choose_or_add_resolver() {
             shown=$((shown + 1))
         done
         if [ -n "$rd" ]; then
-            printf "  %d) 新增 resolver %s@<提供商>\n" "$i" "$rd"
+            printf "  %d) 新增证书签发渠道 %s@<DNS服务商>\n" "$i" "$rd"
         else
-            printf "  %d) 新增 resolver（输入根域名与提供商）\n" "$i"
+            printf "  %d) 新增证书签发渠道（输入根域名与 DNS 服务商）\n" "$i"
         fi
         local skip_idx=$((i + 1))
         if [ -n "$allow_skip" ]; then
-            printf "  %d) 跳过（不绑定 resolver，暂用自签证书兜底）\n" "$skip_idx"
+            printf "  %d) 跳过（不绑定证书签发渠道，暂用自签证书兜底）\n" "$skip_idx"
             printf "请输入序号 (1-%d) [1]: " "$skip_idx"
         else
             printf "请输入序号 (1-%d) [1]: " "$i"
@@ -716,7 +720,7 @@ choose_or_add_resolver() {
         if [ -n "$allow_skip" ] && [ "$choice" -eq "$skip_idx" ]; then
             APP_RESOLVER=""
             RESOLVER_ADDED=0
-            printf "⏭️  已跳过 resolver 绑定。\n"
+            printf "⏭️  已跳过证书签发渠道绑定。\n"
             return 0
         fi
         if [ "$choice" -ge 1 ] && [ "$choice" -lt "$i" ]; then
@@ -734,7 +738,7 @@ choose_or_add_resolver() {
                 if [ "$n" -eq "$choice" ]; then
                     APP_RESOLVER="${entry%%|*}"
                     RESOLVER_ADDED=0
-                    printf "✅ 使用 resolver: %s\n" "$APP_RESOLVER"
+                    printf "✅ 使用证书签发渠道: %s\n" "$APP_RESOLVER"
                     return 0
                 fi
             done
@@ -864,7 +868,7 @@ setup_app_certificate() {
     RESOLVER_ADDED=0
     choose_cert_source || return 1
 
-    list_traefik_resolvers || { printf "ℹ️  traefik resolver 池为空，本次将引导新增 DNS resolver。\n"; RESOLVER_POOL=(); }
+    list_traefik_resolvers || { printf "ℹ️  尚无证书签发渠道，本次将引导新增。\n"; RESOLVER_POOL=(); }
     choose_app_domain || return 1
 
     if [ "$CERT_MODE" = static ]; then
@@ -889,7 +893,7 @@ choose_cert_source() {
     printf "==========================================\n"
     printf "📜 请选择%s的证书方式\n" "$target"
     printf "==========================================\n"
-    printf "  1) 自动签发（ACME DNS-01，从 resolver 池选择/新增）\n"
+    printf "  1) 自动签发（ACME DNS-01，从证书签发渠道选择/新增）\n"
     printf "  2) 静态证书（使用 traefik 已预置证书，按 SNI 匹配）\n"
     if list_static_certs; then
         printf "   现有静态证书:\n"

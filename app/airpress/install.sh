@@ -283,7 +283,7 @@ chmod 600 "$COMPOSE_FILE"
 
 # 新增 resolver 修改的是 traefik 静态配置，必须重启容器才生效
 if [ "${RESOLVER_ADDED:-0}" = 1 ]; then
-    printf "⚠️  本次新增了 resolver（traefik 静态配置已变更），需重启 traefik 生效：\n"
+    printf "⚠️  本次新增了证书签发渠道（traefik 静态配置已变更），需重启 traefik 生效：\n"
     printf "   cd %s && docker compose restart\n" "$TRAEFIK_HOME"
 fi
 

@@ -30,12 +30,12 @@ fi
 printf "==========================================\n"
 printf "🔧 Traefik: %s\n" "$TRAEFIK_HOME"
 if list_traefik_resolvers; then
-    printf "🔐 resolver 池（自动签发）:\n"
+    printf "🔐 证书签发渠道（自动签发）:\n"
     for entry in "${RESOLVER_POOL[@]}"; do
         printf "   - %s（provider: %s）\n" "${entry%%|*}" "${entry##*|}"
     done
 else
-    printf "🔐 resolver 池为空\n"
+    printf "🔐 证书签发渠道为空\n"
 fi
 if list_static_certs; then
     printf "📜 静态证书池（SNI 匹配）:\n"
@@ -51,7 +51,7 @@ configure_traefik_menu || exit 1
 
 if [ "${RESOLVER_ADDED:-0}" = 1 ] || [ "${STATIC_ADDED:-0}" = 1 ] || [ "${CA_CHANGED:-0}" = 1 ]; then
     printf -- "----------------------------------------\n"
-    printf "✅ 证书配置已更新（resolver: %s / 静态证书: %s / CA 环境: %s）\n" \
+    printf "✅ 证书配置已更新（证书签发渠道: %s / 静态证书: %s / CA 环境: %s）\n" \
         "$([ "${RESOLVER_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')" \
         "$([ "${STATIC_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')" \
         "$([ "${CA_CHANGED:-0}" = 1 ] && printf '已切换' || printf '无变更')"
