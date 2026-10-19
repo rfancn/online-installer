@@ -24,9 +24,9 @@ bash run.sh configure traefik     # 配置维护：traefik 新增 DNS resolver�
 
 ACME 统一走 **DNS-01**，resolver 池只包含 DNS resolver。两层职责分离：
 
-- **resolver 池（静态）**：traefik 安装时收集 ACME 邮箱与 CA 环境，并**可选**
-  立即配置 DNS resolver（也可跳过，之后补配）。resolver 以
-  **`域名@提供商`** 命名：泛域名 `*.example.com@aliyun`（同根域名下应用共享），
+- **resolver 池（静态）**：traefik 安装时收集 ACME 邮箱与 CA 环境（必填）。
+  resolver 在 Dashboard/应用配置证书时按需引导新增，或随时手动添加；
+  以 **`域名@提供商`** 命名：泛域名 `*.example.com@aliyun`（同根域名下应用共享），
   单域名 `app.example.com@aliyun`；每个"域名+提供商"一个，独立证书存储
   `letsencrypt/acme-<resolver>.json`（官方禁止共用）。
   Dashboard 配置时先选证书方式：**ACME 自动签发**则绑定/跳过 resolver，

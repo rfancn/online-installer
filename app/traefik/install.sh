@@ -99,20 +99,6 @@ if [ "$MODE" = reinstall ]; then
 fi
 
 
-# ---------- 5b. 可选：配置 DNS resolver 池（追加进已安装的 traefik.toml/.env） ----------
-printf "==========================================\n"
-printf "🔐 是否现在配置 DNS resolver（Let's Encrypt DNS-01 凭据池）\n"
-printf "==========================================\n"
-printf "（可跳过：之后经 bash run.sh configure traefik 或业务应用安装时新增）\n"
-printf "现在添加？(y/n) [y]: "
-read -r add_choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; exit 1; }
-case "${add_choice:-y}" in
-    y|Y)
-        # 菜单式循环：DNS resolver / 静态证书可混加，n 结束（与 configure 共用）
-        configure_traefik_menu || exit 1
-        ;;
-esac
-
 # ---------- 6. 配置 Dashboard：先选证书方式，ACME 再定 resolver，最后推导访问域名 ----------
 # ACME：从池选择/新增 resolver，或跳过（自签兜底）；静态：certResolver 置空，按 SNI 匹配
 printf "==========================================\n"

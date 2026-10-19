@@ -551,7 +551,7 @@ add_static_cert_flow() {
     return 0
 }
 
-# traefik 证书源管理菜单（install 5b 与 configure.sh 共用）：
+# traefik 证书源管理菜单（configure.sh 使用）：
 # DNS resolver 新增/复用成功后直接结束；静态证书可继续添加，n 结束；
 # 变更标记经 RESOLVER_ADDED/STATIC_ADDED 返回
 configure_traefik_menu() {
