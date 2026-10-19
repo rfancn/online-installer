@@ -13,13 +13,13 @@ server {
     access_log /var/log/nginx/__LOG_PREFIX__-access.log;
     error_log  /var/log/nginx/__LOG_PREFIX__-error.log;
 
-    # 静态站点：按根路径处理（PC 管理端的路径第一段已由 Traefik 剥离；
-    # 微信回调站点由 Traefik 原路径转发，不做剥离）
+    # PC 管理端：Traefik 以 /admin 前缀原样转发，root 指向 html 父目录；
+    # 微信回调站点：Traefik 原路径转发，root 指向 wx 目录
     location / {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
         root __ROOT_DIR__;
         index index.html index.htm;
-        try_files $uri $uri/ /index.html;
+        try_files $uri $uri/ __INDEX_FALLBACK__;
     }
 
     # 禁止访问隐藏文件（以 . 开头）
