@@ -154,7 +154,7 @@ render_toml() {
 
     printf '# --- API：剥离 /api 前缀（对应 nginx rewrite ^/api/(.*)$ /$1，各租户共用）---\n'
     printf '[http.middlewares.hipoint-api-stripprefix.stripprefix]\n'
-    printf '  prefix = "/api"\n\n'
+    printf '  prefixes = ["/api"]\n\n'
 
     printf '# --- 管理前端路由：根路径兜底 → nginx 静态服务（Cache-Control 由 nginx 提供）---\n'
     printf '[http.routers.hipoint-admin]\n'
