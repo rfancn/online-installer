@@ -552,18 +552,20 @@ add_static_cert_flow() {
 }
 
 # traefik 证书源管理菜单（install 5b 与 configure.sh 共用）：
-# 循环添加 DNS resolver / 静态证书，n 结束；变更标记经 RESOLVER_ADDED/STATIC_ADDED 返回
+# DNS resolver 新增/复用成功后直接结束；静态证书可继续添加，n 结束；
+# 变更标记经 RESOLVER_ADDED/STATIC_ADDED 返回
 configure_traefik_menu() {
     local choice
     while true; do
-        printf "🧰 选择要添加的证书来源（可多次）:\n"
-        printf "  1) DNS resolver（ACME 自动签发，需 DNS 提供商凭据）\n"
+        printf "🧰 选择要添加的证书来源:\n"
+        printf "  1) ACME 自动签发（DNS-01，需 DNS 提供商凭据）\n"
         printf "  2) 静态证书（预签发的证书文件，按 SNI 匹配）\n"
         printf "  n) 完成\n"
         printf "请输入 (1/2/n) [n]: "
         read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
         case "$choice" in
-            1) add_dns_resolver ;;
+            # 新增或复用 resolver 成功后直接退出，不再重复询问是否继续添加
+            1) add_dns_resolver && return 0 ;;
             2) add_static_cert_flow ;;
             n|N|"") return 0 ;;
             *) printf "❌ 无效输入 '%s'。\n" "$choice" ;;
