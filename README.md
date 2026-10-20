@@ -116,6 +116,10 @@ Traefik 的 DNS-01 凭据是进程级环境变量，同一个 Traefik 实例内�
 之后安装器为 `example.net` 创建的 `example.net@aliyun` 渠道
 即可复用主账号凭据完成签发。
 
+注意：阿里云控制台的“主机记录”填 `_acme-challenge`，不要填完整域名
+`_acme-challenge.example.net`，否则会被追加成
+`_acme-challenge.example.net.example.net`，导致 CNAME 查询不到。
+
 如果 `example.net` 先配置、`example.com` 后配置，不需要清空重来：
 新增 `example.com` 时选择 `3) 将本根域名的账号设为主账号`，
 或在 `bash run.sh configure traefik` 中选择

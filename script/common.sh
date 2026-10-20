@@ -489,8 +489,11 @@ setup_cname_delegation() {
     printf "==========================================\n"
     printf "请到管理 %s DNS 的区域（另一个 %s 账号）添加：\n\n" "$rd" "$(resolver_alias "$provider")"
     printf "  记录类型: CNAME\n"
-    printf "  记录名:   _acme-challenge.%s\n" "$rd"
-    printf "  记录值:   %s\n\n" "$target"
+    printf "  主机记录: _acme-challenge（区域 %s 内的相对名）\n" "$rd"
+    printf "  完整域名: _acme-challenge.%s\n" "$rd"
+    printf "  记录值:   %s\n" "$target"
+    printf "  提示: “主机记录”不要重复填写区域名，否则会变成\n"
+    printf "        _acme-challenge.%s.%s，导致 CNAME 查不到。\n\n" "$rd" "$rd"
     printf "该渠道将为根域名 %s 签发泛域名证书（*.%s + %s），\n" "$rd" "$rd" "$rd"
     printf "CNAME 只需在根级配置一次，覆盖一级子域名（如 app.%s）。\n\n" "$rd"
     printf "原理：Traefik 只持有主账号（锚点 %s）的凭据；\n" "$primary"
@@ -607,6 +610,40 @@ remove_cert_only_router() {
     rm -f "$file"
 }
 
+# 同步 Dashboard 动态路由的证书域名声明
+# 参数: $1=resolver 名 $2=根域名 $3=1 委派（使用泛域名）/0 主账号（移除泛域名）
+# 仅当 dashboard.toml 的 certResolver 指向该 resolver 时生效
+sync_dashboard_cert_domains() {
+    local name="$1" root="$2" delegated="$3" file tmp host
+    [ -n "${TRAEFIK_HOME:-}" ] || return 0
+    file="${TRAEFIK_HOME}/config/dashboard.toml"
+    [ -f "$file" ] || return 0
+    grep -qF "certResolver = \"${name}\"" "$file" || return 0
+
+    # 删除已有的泛域名声明块（安装器生成格式：1 行段头 + 2 行属性）
+    tmp="${file}.tmp"
+    awk '
+        /^\[\[http\.routers\.dashboard\.tls\.domains\]\]/ { skip = 2; next }
+        skip > 0 { skip--; next }
+        { print }
+    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$file" || return 1
+
+    [ "$delegated" = 1 ] || return 0
+
+    # 泛域名只覆盖一级子域名，Dashboard 域名层级不匹配时明确告警
+    host=$(sed -n 's/.*Host(`\([^`]*\)`.*/\1/p' "$file" | head -n 1)
+    if [ -n "$host" ] && ! app_domain_covered_by_wildcard "$host" "$root"; then
+        printf "⚠️  Dashboard 域名 %s 不在泛域名 *.%s 覆盖范围内，证书可能无法签发。\n" "$host" "$root"
+    fi
+    cat >> "$file" <<EOF
+
+[[http.routers.dashboard.tls.domains]]
+  main = "*.${root}"
+  sans = ["${root}"]
+EOF
+}
+
 # 用当前的 DNS_ENV_NAMES/VALUES 覆盖某服务商在 .env 中的凭据
 # （切换主账号时使用；同一服务商始终只保留一套）
 set_provider_credentials() {
@@ -630,7 +667,7 @@ set_provider_credentials() {
 # 副作用: 覆盖 .env 凭据、更新锚点、重算该服务商所有渠道的 CNAME 注释
 # 结果: PRIMARY_SWITCHED=1
 switch_primary_account() {
-    local provider="$1" new_anchor="$2" old_anchor entry name root target
+    local provider="$1" new_anchor="$2" old_anchor entry name root target envf
     [ -n "${TRAEFIK_HOME:-}" ] || return 1
     [ -n "$new_anchor" ] || return 1
     old_anchor=$(get_primary_root "$provider" 2>/dev/null || true)
@@ -657,11 +694,23 @@ switch_primary_account() {
             fi
             remove_cert_only_router "$name" || return 1
             set_resolver_cname_comment "$name" "" || return 1
+            sync_dashboard_cert_domains "$name" "$root" 0 || return 1
         else
             target="_acme-challenge.${root}.acme.${new_anchor}."
             write_cert_only_router "$name" "$root" || return 1
             set_resolver_cname_comment "$name" "$target" || return 1
+            sync_dashboard_cert_domains "$name" "$root" 1 || return 1
             printf "请配置 CNAME: _acme-challenge.%s -> %s\n" "$root" "$target"
+            # 旧应用可能仍声明精确域名证书；泛域名证书签发后虽可服务，
+            # 但其续期仍会失败，提示重跑安装改用泛域名
+            if [ -n "${SERVICE_BASE:-}" ]; then
+                for envf in "$SERVICE_BASE"/*/.env; do
+                    [ -f "$envf" ] || continue
+                    grep -qF "_RESOLVER=${name}" "$envf" 2>/dev/null || continue
+                    grep -qE '^[A-Z0-9_]+_CERT_MAIN=\*\.' "$envf" 2>/dev/null && continue
+                    printf "⚠️  应用 %s 仍按精确域名申请证书，建议重跑其 install.sh 改用泛域名。\n" "$(dirname "$envf")"
+                done
+            fi
         fi
     done
     if [ -n "$old_anchor" ] && [ "$old_anchor" != "$new_anchor" ]; then
