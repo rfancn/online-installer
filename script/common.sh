@@ -523,9 +523,15 @@ setup_cname_delegation() {
         [ "$i" -lt 3 ] && { printf "⏳ 暂未查到 CNAME，5 秒后重试（%d/3）...\n" "$i"; sleep 5; }
     done
 
-    printf "⚠️  暂未验证到 CNAME（可能仍在传播）。resolver 仍会创建；\n"
-    printf "    若签发失败，请检查: _acme-challenge.%s -> %s\n" "$rd" "$target"
-    return 0
+    printf "⚠️  暂未验证到 CNAME（可能仍在传播或填写有误）。\n"
+    printf "    请先确认: dig +short CNAME _acme-challenge.%s @223.5.5.5\n" "$rd"
+    printf "    期望结果: %s\n" "$target"
+    printf "    CNAME 生效前签发必然失败。是否仍继续创建渠道？(y/n) [n]: "
+    read -r answer || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    case "${answer:-n}" in
+        y|Y) return 0 ;;
+        *)   CNAME_TARGET=""; printf "已取消，未创建渠道。\n"; return 1 ;;
+    esac
 }
 
 # 设置/移除某个 resolver 的 CNAME 委派注释
@@ -821,7 +827,9 @@ create_resolver() {
   [certificatesResolvers."${name}".acme.dnsChallenge]
     provider = "${DNS_PROVIDER}"
     delayBeforeCheck = 30                           # 等 DNS 记录传播，传播慢可适当调大
-    resolvers = ["223.5.5.5:53", "1.1.1.1:53"]
+    # 递归 DNS 用于 CNAME 跟随与 TXT 传播检查；1.1.1.1 在部分网络下 UDP 超时，
+    # 默认使用国内可达的阿里云 DNS
+    resolvers = ["223.5.5.5:53", "223.6.6.6:53"]
 EOF
     } >> "$static"
 

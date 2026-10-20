@@ -120,6 +120,18 @@ Traefik 的 DNS-01 凭据是进程级环境变量，同一个 Traefik 实例内�
 `_acme-challenge.example.net`，否则会被追加成
 `_acme-challenge.example.net.example.net`，导致 CNAME 查询不到。
 
+**签发报错排查**
+
+- `alicloud: zone <根域名> not found in AliDNS for domain _acme-challenge.<根域名>`：
+  说明 lego 没有查到 CNAME，回退到直接访问该根域名区域。依次检查：
+  1. `dig +short CNAME _acme-challenge.<根域名> @223.5.5.5` 是否返回委派目标；
+  2. 阿里云“主机记录”是否误填了完整域名；
+  3. `_acme-challenge` 下是否有旧 TXT/CNAME 记录冲突；
+  4. traefik `.env` 是否设置了 `LEGO_DISABLE_CNAME_SUPPORT=true`。
+- `read udp ...->1.1.1.1:53: i/o timeout`：容器到 1.1.1.1 不通。
+  将 `traefik.toml` 各 resolver 的 `resolvers` 改为
+  `["223.5.5.5:53", "223.6.6.6:53"]`，然后重启 traefik。
+
 如果 `example.net` 先配置、`example.com` 后配置，不需要清空重来：
 新增 `example.com` 时选择 `3) 将本根域名的账号设为主账号`，
 或在 `bash run.sh configure traefik` 中选择
