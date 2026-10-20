@@ -1,0 +1,61 @@
+services:
+  airpress-server:
+    image: h1dian/airpress:latest
+    container_name: airpress-server
+    restart: always
+    environment:
+      - LOGGING_LEVEL_APP=info
+    volumes:
+      - ./conf:/app/conf
+      - ./resources:/app/resources
+      - ./upload:/app/upload
+      - ./logs:/app/logs
+    # 直接访问模式：应用端口映射到宿主机，不经过 Traefik
+    ports:
+      - "${AIRPRESS_PORT}:8080"
+    depends_on:
+      airpress-mysql:
+        condition: service_healthy
+
+  airpress-mysql:
+    image: mysql:5.7
+    # 容器名即 DSN 里的主机名，两者共用 .env 的 MYSQL_HOST，天然保持一致
+    container_name: ${MYSQL_HOST}
+    volumes:
+      - ${PWD}/db:/var/lib/mysql
+    command:
+      # --- 字符集与网络基础配置 ---
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_allowed_packet=64M
+      - --net_write_timeout=600
+      # --- 连接与超时优化（取值来自 .env，由 install.sh 按可用内存分档） ---
+      - --max_connections=${MYSQL_MAX_CONNECTIONS}
+      - --wait_timeout=600
+      - --interactive_timeout=600
+      - --thread_cache_size=${MYSQL_THREAD_CACHE_SIZE}
+      # --- 核心 InnoDB 调优（取值来自 .env，由 install.sh 按可用内存分档） ---
+      - --innodb_buffer_pool_size=${MYSQL_INNODB_BUFFER_POOL_SIZE}
+      - --innodb_buffer_pool_instances=${MYSQL_INNODB_BUFFER_POOL_INSTANCES}
+      - --innodb_log_file_size=${MYSQL_INNODB_LOG_FILE_SIZE}
+      - --innodb_flush_method=O_DIRECT
+      - --innodb_stats_on_metadata=OFF
+      # --- 顺序读与扫描优化（每连接分配，不随内存放大） ---
+      - --read_buffer_size=2M
+      - --read_rnd_buffer_size=4M
+      # --- 其他优化 ---
+      - --skip-name-resolve              # 禁用 DNS 解析，提升连接速度
+    environment:
+      # MYSQL_RANDOM_ROOT_PASSWORD：官方镜像要求至少提供一种 root 密码策略，
+      # 这里让 root 使用随机密码，日常只用 MYSQL_USER 账号
+      - MYSQL_RANDOM_ROOT_PASSWORD=1
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DB}
+    healthcheck:
+      # root 密码是随机生成的，健康检查因此用 MYSQL_USER 账号探测
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      interval: 5s         # 每 5 秒检查一次
+      timeout: 3s          # 检查超时时间
+      retries: 10          # 最多重试 10 次
+      start_period: 30s    # 给予 30 秒的启动宽限期（MySQL 首次初始化较慢）

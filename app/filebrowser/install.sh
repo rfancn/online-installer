@@ -29,32 +29,52 @@ echo "🚀 开始将服务安装到: $SERVICE_DIR"
 mkdir -p "$SERVICE_DIR/data" "$SERVICE_DIR/config" "$SERVICE_DIR/database" "$SERVICE_DIR/logs"
 touch "$SERVICE_DIR/logs/filebrowser.log"
 
-# 4. 安装 docker-compose.yml 与 settings 模板
+# 4. 选择部署方式，安装对应的 compose 与 settings 模板
+choose_install_mode || exit 1
+
 COMPOSE_FILE="$SERVICE_DIR/docker-compose.yml"
-cp resource/docker-compose.yml "$COMPOSE_FILE"
 cp resource/config/settings.json "$SERVICE_DIR/config/settings.json"
 
-# 5. 部署参数来源：.env（compose 的 Traefik 路由规则用 ${FILEBROWSER_HOST} 引用）
 ENV_FILE=.env
 TARGET_ENV_FILE=$SERVICE_DIR/$ENV_FILE
-cp resource/$ENV_FILE $TARGET_ENV_FILE
+cp resource/$ENV_FILE "$TARGET_ENV_FILE"
+
+if [ "$INSTALL_MODE" = direct ]; then
+    # 直接访问：发布宿主机端口，不涉及域名与证书
+    ask_host_port "FileBrowser 访问端口" 8080 || exit 1
+    cp resource/docker-compose.direct.yml "$COMPOSE_FILE"
+    sed -i "s|__FILEBROWSER_PORT__|$(sed_escape "$DIRECT_PORT")|g" "$TARGET_ENV_FILE"
+    sed -i '/^FILEBROWSER_HOST=/d; /^FILEBROWSER_RESOLVER=/d; /^FILEBROWSER_CERT_MAIN=/d; /^FILEBROWSER_CERT_SANS=/d' "$TARGET_ENV_FILE"
+else
+    # 反向代理：域名声明随本应用 labels 动态下发，自动触发签发
+    cp resource/docker-compose.yml "$COMPOSE_FILE"
+    setup_app_certificate || exit 1
+    sed -i "s|__FILEBROWSER_HOST__|$(sed_escape "$APP_HOST")|g" "$TARGET_ENV_FILE"
+    sed -i "s|__FILEBROWSER_RESOLVER__|$(sed_escape "$APP_RESOLVER")|g" "$TARGET_ENV_FILE"
+    sed -i "s|__FILEBROWSER_CERT_MAIN__|$(sed_escape "$CERT_MAIN")|g" "$TARGET_ENV_FILE"
+    sed -i "s|__FILEBROWSER_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
+    sed -i '/^FILEBROWSER_PORT=/d' "$TARGET_ENV_FILE"
+fi
 
 
-# 6. 证书与域名配置（方案 B：resolver 从 traefik 静态池选择或引导新增，
-#    域名声明随本应用 labels 动态下发，自动触发签发）
-setup_app_certificate || exit 1
-sed -i "s|__FILEBROWSER_HOST__|$(sed_escape "$APP_HOST")|g" "$TARGET_ENV_FILE"
-sed -i "s|__FILEBROWSER_RESOLVER__|$(sed_escape "$APP_RESOLVER")|g" "$TARGET_ENV_FILE"
-sed -i "s|__FILEBROWSER_CERT_MAIN__|$(sed_escape "$CERT_MAIN")|g" "$TARGET_ENV_FILE"
-sed -i "s|__FILEBROWSER_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
+# 5. 放行直接访问端口（反向代理模式由 Traefik 的 80/443 入口承接）
+if [ "$INSTALL_MODE" = direct ]; then
+    open_firewall_ports "$DIRECT_PORT/tcp"
+fi
 
 
-# 7. 收尾提示
+# 6. 收尾提示
 printf -- "----------------------------------------\n"
-printf "访问地址: https://%s\n" "$APP_HOST"
+if [ "$INSTALL_MODE" = direct ]; then
+    printf "访问地址: http://<本机IP>:%s\n" "$DIRECT_PORT"
+else
+    printf "访问地址: https://%s\n" "$APP_HOST"
+fi
 printf -- "----------------------------------------\n"
 printf "下一步：cd %s && docker compose up -d\n" "$SERVICE_DIR"
-printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$APP_HOST"
+if [ "$INSTALL_MODE" = proxy ]; then
+    printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$APP_HOST"
+fi
 printf "🔑 首次启动的 admin 随机初始密码见：docker compose logs filebrowser（登录后请立即修改）。\n"
 
 # 新增 resolver 修改的是 traefik 静态配置，必须重启容器才生效

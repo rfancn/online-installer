@@ -27,36 +27,53 @@ echo "🚀 开始将服务安装到: $SERVICE_DIR"
 # 3. 预建数据目录（容器内 /var/syncthing：配置 + 默认同步目录）
 mkdir -p "$SERVICE_DIR/data"
 
-# 4. 安装 docker-compose.yml 与 .env
-COMPOSE_FILE="$SERVICE_DIR/docker-compose.yml"
-cp resource/docker-compose.yml "$COMPOSE_FILE"
+# 4. 选择部署方式，安装对应的 compose 与 .env
+choose_install_mode || exit 1
 
-# 部署参数来源：.env（compose 的 Traefik 路由规则用 ${SYNCTHING_HOST} 引用）
+COMPOSE_FILE="$SERVICE_DIR/docker-compose.yml"
 ENV_FILE=.env
 TARGET_ENV_FILE=$SERVICE_DIR/$ENV_FILE
 cp resource/$ENV_FILE "$TARGET_ENV_FILE"
 
+if [ "$INSTALL_MODE" = direct ]; then
+    # 直接访问：发布宿主机端口，不涉及域名与证书
+    ask_host_port "Syncthing 访问端口" 8384 || exit 1
+    cp resource/docker-compose.direct.yml "$COMPOSE_FILE"
+    sed -i "s|__SYNCTHING_PORT__|$(sed_escape "$DIRECT_PORT")|g" "$TARGET_ENV_FILE"
+    sed -i '/^SYNCTHING_HOST=/d; /^SYNCTHING_RESOLVER=/d; /^SYNCTHING_CERT_MAIN=/d; /^SYNCTHING_CERT_SANS=/d' "$TARGET_ENV_FILE"
+else
+    # 反向代理：域名声明随本应用 labels 动态下发，自动触发签发
+    cp resource/docker-compose.yml "$COMPOSE_FILE"
+    setup_app_certificate || exit 1
+    sed -i "s|__SYNCTHING_HOST__|$(sed_escape "$APP_HOST")|g" "$TARGET_ENV_FILE"
+    sed -i "s|__SYNCTHING_RESOLVER__|$(sed_escape "$APP_RESOLVER")|g" "$TARGET_ENV_FILE"
+    sed -i "s|__SYNCTHING_CERT_MAIN__|$(sed_escape "$CERT_MAIN")|g" "$TARGET_ENV_FILE"
+    sed -i "s|__SYNCTHING_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
+    sed -i '/^SYNCTHING_PORT=/d' "$TARGET_ENV_FILE"
+fi
 
-# 5. 证书与域名配置（resolver 从 traefik 静态池选择或引导新增，
-#    域名声明随本应用 labels 动态下发，自动触发签发）
-setup_app_certificate || exit 1
-sed -i "s|__SYNCTHING_HOST__|$(sed_escape "$APP_HOST")|g" "$TARGET_ENV_FILE"
-sed -i "s|__SYNCTHING_RESOLVER__|$(sed_escape "$APP_RESOLVER")|g" "$TARGET_ENV_FILE"
-sed -i "s|__SYNCTHING_CERT_MAIN__|$(sed_escape "$CERT_MAIN")|g" "$TARGET_ENV_FILE"
-sed -i "s|__SYNCTHING_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
+
+# 5. 放行访问端口，以及同步与局域网发现端口
+if [ "$INSTALL_MODE" = direct ]; then
+    open_firewall_ports "$DIRECT_PORT/tcp" 22000/tcp 22000/udp 21027/udp
+else
+    open_firewall_ports 22000/tcp 22000/udp 21027/udp
+fi
 
 
-# 6. 放行同步与局域网发现端口（改为 bridge 网络后由 compose 发布到宿主机）
-open_firewall_ports 22000/tcp 22000/udp 21027/udp
-
-
-# 7. 收尾提示
+# 6. 收尾提示
 printf -- "----------------------------------------\n"
-printf "访问地址: https://%s\n" "$APP_HOST"
+if [ "$INSTALL_MODE" = direct ]; then
+    printf "访问地址: http://<本机IP>:%s\n" "$DIRECT_PORT"
+else
+    printf "访问地址: https://%s\n" "$APP_HOST"
+fi
 printf -- "----------------------------------------\n"
 printf "下一步：cd %s && docker compose up -d\n" "$SERVICE_DIR"
-printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$APP_HOST"
-printf "🔐 GUI 通过公网域名暴露且初始无认证，首次打开后请立即在\n"
+if [ "$INSTALL_MODE" = proxy ]; then
+    printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$APP_HOST"
+fi
+printf "🔐 GUI 初始无认证，首次打开后请立即在\n"
 printf "   「设置 → 图形用户界面」中设置用户名与密码。\n"
 printf "🔌 与其他设备同步需可达 TCP/UDP 22000 与 UDP 21027（云主机请检查安全组）。\n"
 

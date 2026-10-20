@@ -230,6 +230,43 @@ sed_escape() {
     printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
+# 3.4 部署方式：默认反向代理（Traefik + 域名 + 证书），
+#     也可直接发布宿主机端口、不依赖 Traefik（容器类应用使用）
+# 结果: INSTALL_MODE=proxy|direct
+choose_install_mode() {
+    local choice
+    printf "==========================================\n"
+    printf "🔀 请选择部署方式\n"
+    printf "==========================================\n"
+    printf "  1) 反向代理（Traefik + 域名 + 证书）[默认]\n"
+    printf "  2) 直接访问（发布宿主机端口，不使用 Traefik）\n"
+    printf "请输入序号 (1/2) [1]: "
+    read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    case "${choice:-1}" in
+        1) INSTALL_MODE="proxy" ;;
+        2) INSTALL_MODE="direct" ;;
+        *) printf "❌ 无效输入 '%s'，请输入 1 或 2。\n" "$choice"; return 1 ;;
+    esac
+    return 0
+}
+
+# 交互读取直接访问模式的宿主机端口（回车使用默认值）
+# 参数: $1=提示文案 $2=默认端口；结果: DIRECT_PORT
+ask_host_port() {
+    local label="$1" default="$2" p
+    while true; do
+        printf "请输入%s [%s]: " "$label" "$default"
+        read -r p || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+        p="${p:-$default}"
+        case "$p" in
+            ''|*[!0-9]*) printf "❌ 端口须为数字，请重新输入。\n"; continue ;;
+        esac
+        [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || { printf "❌ 端口须在 1-65535。\n"; continue; }
+        DIRECT_PORT="$p"
+        return 0
+    done
+}
+
 # 3.5 ACME 证书签发渠道池与域名的全局管理（纯 DNS-01）：
 #     渠道命名 = <根域名>@<提供商别名>，如 example.com@aliyun；
 #     应用按所属根域名共享同一渠道

@@ -26,14 +26,21 @@ echo "🚀 开始将服务安装到: $SERVICE_DIR"
 
 mkdir -p "$SERVICE_DIR/conf" "$SERVICE_DIR/resources" "$SERVICE_DIR/logs" "$SERVICE_DIR/upload"
 
-# 安装docker-compose.yml
+# 选择部署方式，安装对应的 docker-compose.yml
+choose_install_mode || exit 1
+
 COMPOSE_FILE="$SERVICE_DIR/docker-compose.yml"
-cp resource/docker-compose.yml $COMPOSE_FILE
+if [ "$INSTALL_MODE" = direct ]; then
+    ask_host_port "AirPress 访问端口" 8080 || exit 1
+    cp resource/docker-compose.direct.yml "$COMPOSE_FILE"
+else
+    cp resource/docker-compose.yml "$COMPOSE_FILE"
+fi
 
 # 部署参数的唯一来源：.env（compose 用 ${...} 引用，config.yaml 的 dsn 由本脚本据此生成）
 ENV_FILE=.env
 TARGET_ENV_FILE=$SERVICE_DIR/$ENV_FILE
-cp resource/$ENV_FILE $TARGET_ENV_FILE
+cp resource/$ENV_FILE "$TARGET_ENV_FILE"
 
 CONFIG_FILE=conf/config.yaml
 TARGET_CONFIG_FILE=$SERVICE_DIR/$CONFIG_FILE
@@ -112,13 +119,21 @@ mv "$THEME_TMP" "$TARGET_THEME_DIR"
 printf "✅ 主题已安装: %s → %s\n" "$THEME_NAME" "$TARGET_THEME_DIR"
 
 
-# 2.5 证书与域名配置（方案 B：resolver 从 traefik 静态池选择或引导新增，
-#     域名声明随本应用 labels 动态下发，自动触发签发）
-setup_app_certificate || exit 1
-sed -i "s|^\(AIRPRESS_HOST=\).*|\1$(sed_escape "$APP_HOST")|" "$TARGET_ENV_FILE"
-sed -i "s|^\(AIRPRESS_RESOLVER=\).*|\1$(sed_escape "$APP_RESOLVER")|" "$TARGET_ENV_FILE"
-sed -i "s|^\(AIRPRESS_CERT_MAIN=\).*|\1$(sed_escape "$CERT_MAIN")|" "$TARGET_ENV_FILE"
-sed -i "s|^\(AIRPRESS_CERT_SANS=\).*|\1$(sed_escape "$CERT_SANS")|" "$TARGET_ENV_FILE"
+# 2.5 证书与域名配置（仅反向代理模式）
+if [ "$INSTALL_MODE" = direct ]; then
+    # 直接访问：只写宿主机端口，移除域名/证书相关变量与注释
+    sed -i "s|^AIRPRESS_PORT=.*|AIRPRESS_PORT=$(sed_escape "$DIRECT_PORT")|" "$TARGET_ENV_FILE"
+    sed -i '/^AIRPRESS_HOST=/d; /^AIRPRESS_RESOLVER=/d; /^AIRPRESS_CERT_MAIN=/d; /^AIRPRESS_CERT_SANS=/d' "$TARGET_ENV_FILE"
+    sed -i '/^# 证书解析器/d; /^# 通配证书声明/d; /^# 精确域名模式/d' "$TARGET_ENV_FILE"
+else
+    # 反向代理：域名声明随本应用 labels 动态下发，自动触发签发
+    setup_app_certificate || exit 1
+    sed -i "s|^\(AIRPRESS_HOST=\).*|\1$(sed_escape "$APP_HOST")|" "$TARGET_ENV_FILE"
+    sed -i "s|^\(AIRPRESS_RESOLVER=\).*|\1$(sed_escape "$APP_RESOLVER")|" "$TARGET_ENV_FILE"
+    sed -i "s|^\(AIRPRESS_CERT_MAIN=\).*|\1$(sed_escape "$CERT_MAIN")|" "$TARGET_ENV_FILE"
+    sed -i "s|^\(AIRPRESS_CERT_SANS=\).*|\1$(sed_escape "$CERT_SANS")|" "$TARGET_ENV_FILE"
+    sed -i '/^AIRPRESS_PORT=/d' "$TARGET_ENV_FILE"
+fi
 
 
 # 3. 选择数据库类型
@@ -345,6 +360,21 @@ chmod 600 "$TARGET_ENV_FILE" 2>/dev/null
 # （config.yaml 不在此列——它要被挂载进容器供应用读取，贸然改成 600 可能让容器内
 #  非 root 用户读不到配置；确认镜像以 root 运行后可自行再收紧）
 chmod 600 "$COMPOSE_FILE"
+
+# 放行直接访问端口（反向代理模式由 Traefik 的 80/443 入口承接）
+if [ "$INSTALL_MODE" = direct ]; then
+    open_firewall_ports "$DIRECT_PORT/tcp"
+fi
+
+# 收尾提示
+printf -- "----------------------------------------\n"
+if [ "$INSTALL_MODE" = direct ]; then
+    printf "访问地址: http://<本机IP>:%s\n" "$DIRECT_PORT"
+else
+    printf "访问地址: https://%s\n" "$APP_HOST"
+    printf "⚠️  请确认 %s 的 DNS 记录已指向本机。\n" "$APP_HOST"
+fi
+printf -- "----------------------------------------\n"
 
 # 新增 resolver 修改的是 traefik 静态配置，必须重启容器才生效
 if [ "${RESOLVER_ADDED:-0}" = 1 ]; then
