@@ -1,0 +1,43 @@
+services:
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: syncthing
+    hostname: my-syncthing
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      # 改为共享 web 网络后，traefik 无法访问容器内的 127.0.0.1，
+      # 因此 GUI 必须监听 0.0.0.0:8384 才能被反向代理
+      - STGUIADDRESS=0.0.0.0:8384
+    volumes:
+      # 配置与默认同步目录（容器内 /var/syncthing）
+      - ./data:/var/syncthing
+    # 原 host 网络下的同步与局域网发现端口，改为 bridge 后需显式发布
+    ports:
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      - "21027:21027/udp"
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.syncthing.rule=Host(`${SYNCTHING_HOST}`)"
+      - "traefik.http.routers.syncthing.entrypoints=websecure"
+      - "traefik.http.routers.syncthing.tls=true"
+      # 证书解析器由 .env 的 SYNCTHING_RESOLVER 提供（traefik resolver 池）
+      - "traefik.http.routers.syncthing.tls.certResolver=${SYNCTHING_RESOLVER}"
+      # 应用直接按 rule 域名签发证书，两项留空即可
+      - "traefik.http.routers.syncthing.tls.domains[0].main=${SYNCTHING_CERT_MAIN}"
+      - "traefik.http.routers.syncthing.tls.domains[0].sans=${SYNCTHING_CERT_SANS}"
+      - "traefik.http.routers.syncthing.service=syncthing-svc"
+      - "traefik.http.services.syncthing-svc.loadbalancer.server.port=8384"
+    healthcheck:
+      test: curl -fkLsS -m 2 127.0.0.1:8384/rest/noauth/health | grep -o --color=never OK || exit 1
+      interval: 1m
+      timeout: 10s
+      retries: 3
+
+networks:
+  web:
+    external: true
