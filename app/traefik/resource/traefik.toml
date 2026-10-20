@@ -48,9 +48,11 @@
   watch = true
 
 # --- Let's Encrypt 证书解析器（resolver 池，仅 DNS-01） ---
-# ACME 统一使用 DNS-01 挑战：一个 resolver 绑定一个 DNS 提供商凭据，
-# 池内只有 [certificatesResolvers.<根域名>@<提供商别名>.acme] 段
-# （如 example.com@aliyun）。
+# ACME 统一使用 DNS-01 挑战：池内只有
+# [certificatesResolvers.<根域名>@<提供商别名>.acme] 段（如 example.com@aliyun）。
+# 注意：lego 的 DNS 凭据是进程级环境变量，同一服务商只能有一套；
+# 同一服务商的多个 resolver 共用 .env 中的主账号凭据。其他账号的根域名
+# 通过 CNAME 委派复用主账号凭据（见安装器 README「多账号」一节）。
 # 本模板初始不含任何 resolver：由业务应用安装（引导）或
 # bash run.sh configure traefik 经 common.sh 的 create_resolver() 追加到
 # 文件末尾（storage 每 resolver 独立 acme-<resolver名>.json，官方禁止共用存储文件）。

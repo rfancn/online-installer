@@ -77,8 +77,11 @@ printf "🔐 GUI 初始无认证，首次打开后请立即在\n"
 printf "   「设置 → 图形用户界面」中设置用户名与密码。\n"
 printf "🔌 与其他设备同步需可达 TCP/UDP 22000 与 UDP 21027（云主机请检查安全组）。\n"
 
-# 新增 resolver 修改的是 traefik 静态配置，必须重启容器才生效
-if [ "${RESOLVER_ADDED:-0}" = 1 ]; then
+# 主账号切换会改写 .env 凭据，必须重建容器；新增 resolver 只需重启
+if [ "${PRIMARY_SWITCHED:-0}" = 1 ]; then
+    printf "⚠️  本次切换了 traefik 主账号（.env 凭据已变更），需重建容器生效：\n"
+    printf "   cd %s && docker compose up -d --force-recreate\n" "$TRAEFIK_HOME"
+elif [ "${RESOLVER_ADDED:-0}" = 1 ]; then
     printf "⚠️  本次新增了证书签发渠道（traefik 静态配置已变更），需重启 traefik 生效：\n"
     printf "   cd %s && docker compose restart\n" "$TRAEFIK_HOME"
 fi

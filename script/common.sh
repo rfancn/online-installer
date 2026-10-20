@@ -270,6 +270,10 @@ ask_host_port() {
 # 3.5 ACME 证书签发渠道池与域名的全局管理（纯 DNS-01）：
 #     渠道命名 = <根域名>@<提供商别名>，如 example.com@aliyun；
 #     应用按所属根域名共享同一渠道
+#     多账号：Traefik 的 DNS 凭据是进程级环境变量，同一服务商只能有一套。
+#     每个服务商首次配置的账号为主账号，凭据写入 traefik 的 .env；
+#     其他账号的根域名通过 CNAME 委派复用主账号凭据：
+#       _acme-challenge.<根域名> CNAME _acme-challenge.<根域名>.acme.<主账号锚点根域名>.
 #     静态段存于 traefik.toml（TOML 引号键），根域名池存 .installer.conf
 
 # lego 提供商标识 → 别名（用于 resolver 命名，贴近用户习惯）
@@ -307,6 +311,8 @@ save_global_root_domains() {
         printf 'ROOT_DOMAINS="%s"\n' "$*"
     } > "$tmp" || { printf "❌ 无法写入 %s\n" "$INSTALLER_CONF"; return 1; }
     mv "$tmp" "$INSTALLER_CONF" || return 1
+    # 同步内存值：同一次运行里连续新增渠道时不能丢已有根域名
+    ROOT_DOMAINS="$*"
 }
 
 # 校验根域名格式（非空、无空格引号 $ * 等），供各收集流程复用
@@ -344,6 +350,327 @@ list_traefik_resolvers() {
         RESOLVER_POOL+=("${r}|${p:-unknown}")
     done < "$static"
     [ ${#RESOLVER_POOL[@]} -gt 0 ]
+}
+
+# 从 traefik.toml 读取 resolver 的 CNAME 委派目标（未委派则失败）
+# 约定：委派注释紧邻其 resolver 段之前：
+#   # cname-delegation: _acme-challenge.<根域名> CNAME <目标>.
+resolver_cname_target() {
+    local name="$1" static="${TRAEFIK_HOME:-}/traefik.toml" line target=""
+    [ -f "$static" ] || return 1
+    while IFS= read -r line; do
+        case "$line" in
+            '# cname-delegation:'*' CNAME '*)
+                target="${line##* CNAME }"
+                ;;
+            \[certificatesResolvers.*)
+                if [ "$line" = "[certificatesResolvers.\"${name}\".acme]" ]; then
+                    [ -n "$target" ] && { printf '%s' "$target"; return 0; }
+                    return 1
+                fi
+                # 注释只对紧随其后的 resolver 段有效，跨段即失效
+                target=""
+                ;;
+        esac
+    done < "$static"
+    return 1
+}
+
+# lego 提供商标识 → 该服务商需要的环境变量名（每行一个）
+dns_provider_env_names() {
+    case "$1" in
+        alidns)         printf '%s\n' ALICLOUD_ACCESS_KEY ALICLOUD_SECRET_KEY ;;
+        tencentcloud)   printf '%s\n' TENCENTCLOUD_SECRET_ID TENCENTCLOUD_SECRET_KEY ;;
+        cloudflare)     printf '%s\n' CF_DNS_API_TOKEN ;;
+        *)              return 1 ;;
+    esac
+}
+
+# traefik 的 .env 中是否已有该服务商的完整凭据
+# （同一服务商只保留主账号一套，后续根域名复用）
+provider_credentials_exist() {
+    local provider="$1" envf name val names
+    envf="${TRAEFIK_HOME:-}/.env"
+    [ -f "$envf" ] || return 1
+    names=$(dns_provider_env_names "$provider") || return 1
+    for name in $names; do
+        # 取最后一条非空值，兼容旧版本可能写入的重复键
+        val=$(grep "^${name}=" "$envf" 2>/dev/null | tail -n 1 | cut -d= -f2-)
+        [ -n "$val" ] || return 1
+    done
+    return 0
+}
+
+# 清理旧版本遗留的同服务商重复凭据键：每个变量只保留最后一条
+dedupe_env_provider() {
+    local provider="$1" envf name last tmp
+    envf="${TRAEFIK_HOME:-}/.env"
+    [ -f "$envf" ] || return 0
+    tmp="${envf}.tmp"
+    cp "$envf" "$tmp" || return 1
+    for name in $(dns_provider_env_names "$provider"); do
+        last=$(grep "^${name}=" "$tmp" | tail -n 1)
+        [ -n "$last" ] || continue
+        sed -i "/^${name}=/d" "$tmp"
+        printf '%s\n' "$last" >> "$tmp"
+    done
+    mv "$tmp" "$envf" || return 1
+    chmod 600 "$envf" 2>/dev/null
+}
+
+# 记录每个服务商的主账号锚点根域名（CNAME 委派目标所在区域）
+# 文件格式: <provider>|<根域名>
+save_primary_root() {
+    local provider="$1" root="$2" conf tmp
+    [ -n "${TRAEFIK_HOME:-}" ] || return 1
+    conf="${TRAEFIK_HOME}/acme-providers.conf"
+    tmp="${conf}.tmp"
+    {
+        [ -f "$conf" ] && awk -F'|' -v p="$provider" '$1 != p' "$conf"
+        printf '%s|%s\n' "$provider" "$root"
+    } > "$tmp" || { printf "❌ 无法写入 %s\n" "$conf"; return 1; }
+    mv "$tmp" "$conf" || return 1
+    chmod 600 "$conf" 2>/dev/null
+}
+
+# 读取主账号锚点根域名：优先元数据文件，其次从现有 resolver 池推导
+get_primary_root() {
+    local provider="$1" conf rd entry
+    [ -n "${TRAEFIK_HOME:-}" ] || return 1
+    conf="${TRAEFIK_HOME}/acme-providers.conf"
+    if [ -f "$conf" ]; then
+        rd=$(awk -F'|' -v p="$provider" '$1 == p { print $2; exit }' "$conf")
+        [ -n "$rd" ] && { printf '%s' "$rd"; return 0; }
+    fi
+    for entry in "${RESOLVER_POOL[@]}"; do
+        [ "${entry##*|}" = "$provider" ] || continue
+        printf '%s' "${entry%%|*}" | sed 's/@.*//'
+        return 0
+    done
+    return 1
+}
+
+# 查询 _acme-challenge.<根域名> 的 CNAME 是否指向目标
+# 返回: 0=匹配 1=未查到/不匹配 2=系统没有可用的 DNS 查询工具
+verify_cname() {
+    local rd="$1" want="$2" name got
+    name="_acme-challenge.${rd}"
+    if command -v dig >/dev/null 2>&1; then
+        got=$(dig +short CNAME "$name" 2>/dev/null)
+    elif command -v host >/dev/null 2>&1; then
+        got=$(host -t CNAME "$name" 2>/dev/null | awk '/is an alias for/ { print $NF; exit }')
+    elif command -v nslookup >/dev/null 2>&1; then
+        got=$(nslookup -type=CNAME "$name" 2>/dev/null | awk '/canonical name/ { print $NF; exit }')
+    else
+        return 2
+    fi
+    got=$(printf '%s\n' "$got" | tr '[:upper:]' '[:lower:]' | sed 's/\.$//')
+    want=$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | sed 's/\.$//')
+    [ -n "$got" ] && printf '%s\n' "$got" | grep -Fqx "$want"
+}
+
+# CNAME 委派：把 <根域名> 的 _acme-challenge 指向主账号区域内的目标名，
+# 使 Traefik 仅凭主账号凭据即可完成 DNS-01 验证（Traefik 官方推荐的多账号方案）。
+# 参数: $1=委派根域名 $2=主账号锚点根域名 $3=服务商标识
+# 结果: CNAME_TARGET（含末尾点）
+setup_cname_delegation() {
+    local rd="$1" primary="$2" provider="$3" target answer i rc
+    target="_acme-challenge.${rd}.acme.${primary}."
+    # DNS 名称上限 253 字符（不含末尾点）
+    if [ ${#target} -gt 254 ]; then
+        printf "❌ 委派目标 %s 超过 DNS 名称长度上限，请缩短根域名或锚点根域名。\n" "$target"
+        CNAME_TARGET=""
+        return 1
+    fi
+    CNAME_TARGET="$target"
+
+    printf "\n==========================================\n"
+    printf "🔗 需要配置 CNAME 委派（多账号）\n"
+    printf "==========================================\n"
+    printf "请到管理 %s DNS 的区域（另一个 %s 账号）添加：\n\n" "$rd" "$(resolver_alias "$provider")"
+    printf "  记录类型: CNAME\n"
+    printf "  记录名:   _acme-challenge.%s\n" "$rd"
+    printf "  记录值:   %s\n\n" "$target"
+    printf "该渠道将为根域名 %s 签发泛域名证书（*.%s + %s），\n" "$rd" "$rd" "$rd"
+    printf "CNAME 只需在根级配置一次，覆盖一级子域名（如 app.%s）。\n\n" "$rd"
+    printf "原理：Traefik 只持有主账号（锚点 %s）的凭据；\n" "$primary"
+    printf "      lego 会沿该 CNAME 到主账号区域创建/删除 TXT 验证记录。\n"
+    printf "      若该名字已有旧 TXT/CNAME 记录，请先删除。\n"
+    printf "==========================================\n"
+
+    if grep -qi '^LEGO_DISABLE_CNAME_SUPPORT=' "${TRAEFIK_HOME}/.env" 2>/dev/null; then
+        # lego 用 strconv.ParseBool，1/t/true 都视为开启
+        case "$(grep -i '^LEGO_DISABLE_CNAME_SUPPORT=' "${TRAEFIK_HOME}/.env" | tail -n 1 | cut -d= -f2- | tr '[:upper:]' '[:lower:]')" in
+            1|t|true)
+                printf "⚠️  .env 中设置了 LEGO_DISABLE_CNAME_SUPPORT，CNAME 将不会被跟随。\n"
+                printf "    请删除该配置后重启 traefik。\n"
+                ;;
+        esac
+    fi
+
+    printf "添加完成后按回车验证 CNAME（直接回车继续）: "
+    read -r answer || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+
+    for i in 1 2 3; do
+        verify_cname "$rd" "$target"; rc=$?
+        case "$rc" in
+            0) printf "✅ CNAME 验证通过。\n"; return 0 ;;
+            2) printf "ℹ️  未找到 dig/host/nslookup，跳过自动验证；请自行确认 CNAME 已生效。\n"; return 0 ;;
+        esac
+        [ "$i" -lt 3 ] && { printf "⏳ 暂未查到 CNAME，5 秒后重试（%d/3）...\n" "$i"; sleep 5; }
+    done
+
+    printf "⚠️  暂未验证到 CNAME（可能仍在传播）。resolver 仍会创建；\n"
+    printf "    若签发失败，请检查: _acme-challenge.%s -> %s\n" "$rd" "$target"
+    return 0
+}
+
+# 设置/移除某个 resolver 的 CNAME 委派注释
+# 参数: $1=resolver 名（如 sysummit.com@aliyun） $2=委派目标（空=移除）
+set_resolver_cname_comment() {
+    local name="$1" target="$2" static="${TRAEFIK_HOME}/traefik.toml"
+    local section_line comment_line l line root
+    [ -f "$static" ] || return 1
+    section_line=$(grep -nxF "[certificatesResolvers.\"${name}\".acme]" "$static" | head -n 1 | cut -d: -f1)
+    [ -n "$section_line" ] || return 1
+
+    # 在 section 之前（允许空行）查找现有委派注释
+    comment_line=""
+    l=$((section_line - 1))
+    while [ "$l" -ge 1 ]; do
+        line=$(sed -n "${l}p" "$static")
+        case "$line" in
+            '# cname-delegation:'*) comment_line="$l"; break ;;
+            '') l=$((l - 1)); continue ;;
+            *) break ;;
+        esac
+    done
+
+    if [ -n "$comment_line" ]; then
+        sed -i "${comment_line}d" "$static" || return 1
+        [ "$comment_line" -lt "$section_line" ] && section_line=$((section_line - 1))
+    fi
+
+    if [ -n "$target" ]; then
+        root="${name%@*}"
+        sed -i "${section_line}i\\# cname-delegation: _acme-challenge.${root} CNAME ${target}" "$static" || return 1
+    fi
+    return 0
+}
+
+# resolver 名 → 可用于 Traefik 路由/服务名的安全标识
+# 追加短哈希，避免 a.com@x 与 a-com@x 之类的清洗结果冲突
+cert_router_id() {
+    local base hash
+    base=$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-' | sed 's/^-*//; s/-*$//')
+    hash=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+    printf 'acme-%s-%s' "$base" "$hash"
+}
+
+# 为委派渠道生成“仅触发签发”的动态路由：
+# rule 使用保留域名 .invalid，不承载业务流量；tls.domains 声明泛域名，
+# Traefik 加载配置后即按需签发，无需等应用安装。
+# 参数: $1=resolver 名 $2=根域名
+write_cert_only_router() {
+    local name="$1" root="$2" id dir file tmp
+    [ -n "${TRAEFIK_HOME:-}" ] || return 1
+    dir="${TRAEFIK_HOME}/config"
+    mkdir -p "$dir" || return 1
+    id=$(cert_router_id "$name")
+    file="${dir}/acme-${name}.toml"
+    tmp="${file}.tmp"
+    cat > "$tmp" <<EOF
+# 由安装器生成：仅用于触发泛域名证书签发，不承载业务流量
+# resolver: ${name}
+[http.routers.${id}]
+  rule = "Host(\`${id}.invalid\`)"
+  entryPoints = ["websecure"]
+  service = "${id}-svc"
+  [http.routers.${id}.tls]
+    certResolver = "${name}"
+    [[http.routers.${id}.tls.domains]]
+      main = "*.${root}"
+      sans = ["${root}"]
+[http.services.${id}-svc.loadBalancer]
+  [[http.services.${id}-svc.loadBalancer.servers]]
+    url = "http://127.0.0.1:1"
+EOF
+    mv "$tmp" "$file" || return 1
+    chmod 644 "$file" 2>/dev/null
+}
+
+# 移除委派渠道的“仅触发签发”动态路由（切换为主账号时使用）
+remove_cert_only_router() {
+    local name="$1" file
+    [ -n "${TRAEFIK_HOME:-}" ] || return 0
+    file="${TRAEFIK_HOME}/config/acme-${name}.toml"
+    rm -f "$file"
+}
+
+# 用当前的 DNS_ENV_NAMES/VALUES 覆盖某服务商在 .env 中的凭据
+# （切换主账号时使用；同一服务商始终只保留一套）
+set_provider_credentials() {
+    local provider="$1" envf="${TRAEFIK_HOME}/.env" i
+    [ ${#DNS_ENV_NAMES[@]} -gt 0 ] || return 1
+    [ -f "$envf" ] || return 1
+    for i in "${!DNS_ENV_NAMES[@]}"; do
+        sed -i "/^${DNS_ENV_NAMES[$i]}=/d" "$envf" || return 1
+    done
+    {
+        printf '\n# %s DNS 凭据（主账号，供该服务商下所有根域名共用）\n' "$provider"
+        for i in "${!DNS_ENV_NAMES[@]}"; do
+            printf '%s=%s\n' "${DNS_ENV_NAMES[$i]}" "${DNS_ENV_VALUES[$i]}"
+        done
+    } >> "$envf" || return 1
+    chmod 600 "$envf" 2>/dev/null
+}
+
+# 显式切换某服务商的主账号（不依赖渠道添加顺序）
+# 参数: $1=provider $2=新锚点根域名；依赖 DNS_ENV_NAMES/VALUES（新账号凭据）
+# 副作用: 覆盖 .env 凭据、更新锚点、重算该服务商所有渠道的 CNAME 注释
+# 结果: PRIMARY_SWITCHED=1
+switch_primary_account() {
+    local provider="$1" new_anchor="$2" old_anchor entry name root target
+    [ -n "${TRAEFIK_HOME:-}" ] || return 1
+    [ -n "$new_anchor" ] || return 1
+    old_anchor=$(get_primary_root "$provider" 2>/dev/null || true)
+
+    set_provider_credentials "$provider" || return 1
+    save_primary_root "$provider" "$new_anchor" || return 1
+    # 凭据已落盘，避免 create_resolver 在新增渠道时再次写入
+    DNS_ENV_NAMES=()
+    DNS_ENV_VALUES=()
+
+    list_traefik_resolvers 2>/dev/null || true
+    # 新锚点不再需要“仅触发签发”路由（可能不在当前池中，直接按名字删除）
+    remove_cert_only_router "$(resolver_name "$new_anchor" "$provider")"
+    printf "\n==========================================\n"
+    printf "🔁 %s 主账号已切换为: %s\n" "$(resolver_alias "$provider")" "$new_anchor"
+    printf "==========================================\n"
+    for entry in "${RESOLVER_POOL[@]}"; do
+        [ "${entry##*|}" = "$provider" ] || continue
+        name="${entry%%|*}"
+        root="${name%@*}"
+        if [ "$root" = "$new_anchor" ]; then
+            if resolver_cname_target "$name" >/dev/null 2>&1; then
+                printf "可删除旧的 CNAME: _acme-challenge.%s\n" "$root"
+            fi
+            remove_cert_only_router "$name" || return 1
+            set_resolver_cname_comment "$name" "" || return 1
+        else
+            target="_acme-challenge.${root}.acme.${new_anchor}."
+            write_cert_only_router "$name" "$root" || return 1
+            set_resolver_cname_comment "$name" "$target" || return 1
+            printf "请配置 CNAME: _acme-challenge.%s -> %s\n" "$root" "$target"
+        fi
+    done
+    if [ -n "$old_anchor" ] && [ "$old_anchor" != "$new_anchor" ]; then
+        printf "ℹ️  原主账号锚点 %s 已改为委派渠道。\n" "$old_anchor"
+    fi
+    printf "⚠️  凭据已变更，需重建容器生效: cd %s && docker compose up -d --force-recreate\n" "$TRAEFIK_HOME"
+    printf "⚠️  请先完成上述 CNAME 调整，否则委派渠道续期会失败。\n"
+    PRIMARY_SWITCHED=1
+    return 0
 }
 
 # 收集/沿用 ACME 邮箱与 CA 环境（traefik.toml 已有则沿用，
@@ -428,7 +755,12 @@ create_resolver() {
     fi
 
     mkdir -p "$ldir"
-    cat >> "$static" <<EOF
+    {
+        # 委派注释供 resolver 列表展示，也便于人工排查 CNAME 配置
+        if [ -n "${CNAME_TARGET:-}" ]; then
+            printf '\n# cname-delegation: _acme-challenge.%s CNAME %s\n' "$rd" "$CNAME_TARGET"
+        fi
+        cat <<EOF
 
 [certificatesResolvers."${name}".acme]
   email = "${ACME_EMAIL}"
@@ -442,18 +774,30 @@ create_resolver() {
     delayBeforeCheck = 30                           # 等 DNS 记录传播，传播慢可适当调大
     resolvers = ["223.5.5.5:53", "1.1.1.1:53"]
 EOF
+    } >> "$static"
 
     touch "${ldir}/acme-${name}.json"
     chmod 600 "${ldir}/acme-${name}.json"
 
-    {
-        printf '\n# %s DNS 凭据（证书签发渠道: %s）\n' "$DNS_PROVIDER" "$name"
+    # 委派渠道：立即生成仅触发泛域名签发的动态路由（不依赖应用安装）
+    if [ -n "${CNAME_TARGET:-}" ]; then
+        write_cert_only_router "$name" "$rd" || return 1
+    fi
+
+    # 同一服务商只保留主账号一套凭据：复用时不写入；首次写入前清理同名旧键
+    if [ ${#DNS_ENV_NAMES[@]} -gt 0 ]; then
         local i
         for i in "${!DNS_ENV_NAMES[@]}"; do
-            printf '%s=%s\n' "${DNS_ENV_NAMES[$i]}" "${DNS_ENV_VALUES[$i]}"
+            sed -i "/^${DNS_ENV_NAMES[$i]}=/d" "$envf" 2>/dev/null || true
         done
-    } >> "$envf"
-    chmod 600 "$envf" 2>/dev/null
+        {
+            printf '\n# %s DNS 凭据（主账号，供该服务商下所有根域名共用）\n' "$DNS_PROVIDER"
+            for i in "${!DNS_ENV_NAMES[@]}"; do
+                printf '%s=%s\n' "${DNS_ENV_NAMES[$i]}" "${DNS_ENV_VALUES[$i]}"
+            done
+        } >> "$envf"
+        chmod 600 "$envf" 2>/dev/null
+    fi
 
     APP_RESOLVER="$name"
     return 0
@@ -463,7 +807,7 @@ EOF
 # 参数: $1 = 可选根域名（应用已确定根域名时传入；为空则询问）
 # 结果: APP_RESOLVER；实际写入时 RESOLVER_ADDED=1，命中既有则 0
 add_dns_resolver() {
-    local rd="${1:-}" name entry
+    local rd="${1:-}" name entry new_primary=""
     if [ -z "$rd" ]; then
         printf "请输入该证书签发渠道关联的根域名（如 example.com）: "
         read -r rd || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
@@ -482,9 +826,61 @@ add_dns_resolver() {
         fi
     done
 
-    collect_dns_credentials || return 1
+    CNAME_TARGET=""
+    if provider_credentials_exist "$DNS_PROVIDER"; then
+        # 该服务商已有主账号凭据：复用，不再向 .env 追加第二套
+        # 顺带清理旧版本可能留下的重复键（保留最后一条）
+        dedupe_env_provider "$DNS_PROVIDER" || true
+        local primary_root answer
+        primary_root=$(get_primary_root "$DNS_PROVIDER" 2>/dev/null || true)
+        if [ -z "$primary_root" ]; then
+            # 旧版本升级或手工配置时没有锚点信息，补问一次
+            printf "请输入主账号下用于 CNAME 委派的根域名（如 example.com）: "
+            read -r primary_root || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+            validate_root_domain "$primary_root" || return 1
+            save_primary_root "$DNS_PROVIDER" "$primary_root" || return 1
+        fi
+        printf "ℹ️  该 DNS 服务商已有凭据（主账号锚点: %s）。\n" "$primary_root"
+        printf "    根域名 %s 的 DNS 属于：\n" "$rd"
+        printf "      1) 同一账号（直接复用主账号凭据）[默认]\n"
+        printf "      2) 不同账号（CNAME 委派到主账号 %s）\n" "$primary_root"
+        printf "      3) 不同账号，并将本根域名的账号设为主账号（切换主账号）\n"
+        printf "    请选择 (1/2/3) [1]: "
+        read -r answer || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+        case "${answer:-1}" in
+            1)
+                DNS_ENV_NAMES=()
+                DNS_ENV_VALUES=()
+                ;;
+            2)
+                setup_cname_delegation "$rd" "$primary_root" "$DNS_PROVIDER" || return 1
+                DNS_ENV_NAMES=()
+                DNS_ENV_VALUES=()
+                ;;
+            3)
+                collect_dns_credentials || return 1
+                switch_primary_account "$DNS_PROVIDER" "$rd" || return 1
+                # 锚点已由 switch_primary_account 登记，凭据也已落盘
+                new_primary=""
+                ;;
+            *)
+                printf "❌ 无效输入 '%s'，请输入 1、2 或 3。\n" "$answer"
+                return 1
+                ;;
+        esac
+    else
+        collect_dns_credentials || return 1
+        # 该服务商的第一套凭据即主账号
+        new_primary="$rd"
+    fi
     collect_acme_meta || return 1
     create_resolver "$rd" || return 1
+    # 创建成功后再登记锚点根域名，避免失败时留下脏数据；
+    # 登记失败不撤销已创建的渠道（get_primary_root 还能从 resolver 池推导）
+    if [ -n "$new_primary" ]; then
+        save_primary_root "$DNS_PROVIDER" "$new_primary" \
+            || printf "⚠️  主账号锚点登记失败，后续委派时可能需手动指定锚点根域名。\n"
+    fi
     RESOLVER_ADDED=1
     # 根域名登记进全局池：供 Dashboard 默认域名推导与应用安装时选择复用
     local rd_pool seen=""
@@ -671,9 +1067,82 @@ switch_acme_ca() {
     return 0
 }
 
+# 交互式切换 DNS 服务商主账号（不依赖渠道添加顺序）
+# 结果: PRIMARY_SWITCHED=1
+switch_primary_account_flow() {
+    local provider="" entry choice i root
+    local providers=() roots=()
+    list_traefik_resolvers || { printf "❌ 尚未配置任何证书签发渠道。\n"; return 1; }
+
+    for entry in "${RESOLVER_POOL[@]}"; do
+        provider="${entry##*|}"
+        # 跳过无法识别、无凭据模板的 provider
+        dns_provider_env_names "$provider" >/dev/null 2>&1 || continue
+        case " ${providers[*]} " in
+            *" $provider "*) : ;;
+            *) providers+=("$provider") ;;
+        esac
+    done
+    if [ ${#providers[@]} -eq 0 ]; then
+        printf "❌ 没有可切换的服务商。\n"
+        return 1
+    fi
+
+    printf "==========================================\n"
+    printf "🔁 切换 DNS 服务商主账号\n"
+    printf "==========================================\n"
+    i=1
+    for provider in "${providers[@]}"; do
+        printf "  %d) %s（当前锚点: %s）\n" "$i" "$(resolver_alias "$provider")" \
+            "$(get_primary_root "$provider" 2>/dev/null || printf '未记录')"
+        i=$((i + 1))
+    done
+    printf "请选择服务商 (1-%d): " "${#providers[@]}"
+    read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    case "$choice" in
+        ''|*[!0-9]*) printf "❌ 无效输入。\n"; return 1 ;;
+    esac
+    [ "$choice" -ge 1 ] && [ "$choice" -le "${#providers[@]}" ] \
+        || { printf "❌ 超出范围。\n"; return 1; }
+    provider="${providers[$((choice - 1))]}"
+
+    for entry in "${RESOLVER_POOL[@]}"; do
+        [ "${entry##*|}" = "$provider" ] || continue
+        roots+=("$(printf '%s' "${entry%%|*}" | sed 's/@.*//')")
+    done
+    printf "请选择新的主账号锚点根域名:\n"
+    i=1
+    for root in "${roots[@]}"; do
+        printf "  %d) %s\n" "$i" "$root"
+        i=$((i + 1))
+    done
+    printf "请输入序号 (1-%d): " "${#roots[@]}"
+    read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    case "$choice" in
+        ''|*[!0-9]*) printf "❌ 无效输入。\n"; return 1 ;;
+    esac
+    [ "$choice" -ge 1 ] && [ "$choice" -le "${#roots[@]}" ] \
+        || { printf "❌ 超出范围。\n"; return 1; }
+    root="${roots[$((choice - 1))]}"
+
+    printf "⚠️  切换后，除 %s 外的渠道都需要把 CNAME 指向 %s 区域。\n" "$root" "$root"
+    printf "    继续？(y/n) [n]: "
+    read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+    case "${choice:-n}" in
+        y|Y) : ;;
+        *) printf "已取消。\n"; return 0 ;;
+    esac
+
+    printf "请输入新主账号（%s）的 API 凭据:\n" "$(resolver_alias "$provider")"
+    DNS_PROVIDER="$provider"
+    collect_dns_credentials || return 1
+    switch_primary_account "$provider" "$root" || return 1
+    return 0
+}
+
 # traefik 证书管理菜单（configure.sh 使用）：
 # DNS resolver 新增/复用成功后直接结束；静态证书可继续添加，n 结束；
-# 变更标记经 RESOLVER_ADDED/STATIC_ADDED/CA_CHANGED 返回
+# 变更标记经 RESOLVER_ADDED/STATIC_ADDED/CA_CHANGED/PRIMARY_SWITCHED 返回
 configure_traefik_menu() {
     local choice
     while true; do
@@ -681,15 +1150,17 @@ configure_traefik_menu() {
         printf "  1) ACME 自动签发（DNS-01，需 DNS 提供商凭据）\n"
         printf "  2) 静态证书（预签发的证书文件，按 SNI 匹配）\n"
         printf "  3) 切换 Let's Encrypt 环境（生产/测试）\n"
+        printf "  4) 切换 DNS 服务商主账号（多账号 CNAME 委派）\n"
         printf "  n) 完成\n"
-        printf "请输入 (1/2/3/n) [n]: "
+        printf "请输入 (1/2/3/4/n) [n]: "
         read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
         case "$choice" in
             # 新增或复用 resolver 成功后直接退出，不再重复询问是否继续添加
             1) add_dns_resolver && return 0 ;;
             2) add_static_cert_flow ;;
-            # 切换环境属于完整操作，完成后同样结束菜单
+            # 切换环境/主账号属于完整操作，完成后同样结束菜单
             3) switch_acme_ca && return 0 ;;
+            4) switch_primary_account_flow && return 0 ;;
             n|N|"") return 0 ;;
             *) printf "❌ 无效输入 '%s'。\n" "$choice" ;;
         esac
@@ -817,6 +1288,24 @@ match_root_domain() {
     printf '%s' "$best"
 }
 
+# 判断完整域名是否被 <根域名> 的泛域名证书覆盖：
+# 根域名本身，或恰好一级子域名（*.root）返回 0；更深层级返回 1
+app_domain_covered_by_wildcard() {
+    local host="$1" root="$2" prefix
+    [ -n "$host" ] && [ -n "$root" ] || return 1
+    case "$host" in
+        "$root") return 0 ;;
+        *".$root")
+            prefix="${host%".$root"}"
+            case "$prefix" in
+                ''|*.*) return 1 ;;
+                *)      return 0 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 # 选择应用访问域名：直接输入完整域名，按所属根域名匹配证书签发渠道
 # 结果: APP_HOST / CERT_MAIN="" / CERT_SANS=""（由 Traefik 按 router 域名自动签发）
 #       SELECTED_ROOT_DOMAIN / APP_RESOLVER_DOMAIN（用于派生与渠道匹配）
@@ -889,6 +1378,20 @@ setup_app_certificate() {
     fi
     # 按根域名过滤证书签发渠道
     choose_or_add_resolver "$APP_RESOLVER_DOMAIN" || return 1
+
+    # CNAME 委派渠道：根级 CNAME 只覆盖 _acme-challenge.<根域名>，
+    # 因此改签泛域名证书（*.root + root），一次委派覆盖所有一级子域名
+    if [ -n "$APP_RESOLVER" ] && resolver_cname_target "$APP_RESOLVER" >/dev/null 2>&1; then
+        if ! app_domain_covered_by_wildcard "$APP_HOST" "$SELECTED_ROOT_DOMAIN"; then
+            printf "❌ 委派渠道 %s 按根域名签发泛域名证书（*.%s），\n" "$APP_RESOLVER" "$SELECTED_ROOT_DOMAIN"
+            printf "   无法覆盖 %s（超过一级子域名）。\n" "$APP_HOST"
+            printf "   请改用一级子域名（如 app.%s），或为该完整域名单独配置 CNAME 后使用静态证书。\n" "$SELECTED_ROOT_DOMAIN"
+            return 1
+        fi
+        CERT_MAIN="*.${SELECTED_ROOT_DOMAIN}"
+        CERT_SANS="${SELECTED_ROOT_DOMAIN}"
+        printf "✅ 委派渠道将签发泛域名证书: %s（SAN: %s）\n" "$CERT_MAIN" "$CERT_SANS"
+    fi
     return 0
 }
 

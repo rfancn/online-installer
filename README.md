@@ -51,8 +51,8 @@ ACME 统一走 **DNS-01**，证书签发渠道池只包含 DNS-01 渠道。两�
   bash run.sh configure traefik   # 管理证书来源，完成后重启 traefik
   ```
 
-  `configure` 菜单支持：新增证书签发渠道、新增静态证书、在 Let's Encrypt
-  生产/测试（staging）环境之间切换。切换环境会改写全部渠道的 `caServer`，
+  `configure` 菜单支持：新增证书签发渠道、切换 DNS 服务商主账号、新增静态证书、
+  在 Let's Encrypt 生产/测试（staging）环境之间切换。切换环境会改写全部渠道的 `caServer`，
   并备份清空对应证书存储，重启后按新环境重新签发。
 
   应用安装时若目标根域名尚无对应证书签发渠道，会经菜单调用同一新增流程。
@@ -73,9 +73,50 @@ ACME 统一走 **DNS-01**，证书签发渠道池只包含 DNS-01 渠道。两�
     询问确认，默认取最后两段；
   - 按根域名匹配证书签发渠道（如 `example.com@aliyun`）；找不到匹配渠道时
     询问是否新增；
-  - 证书按应用实际域名签发（单域名证书），不再声明泛域名。
+  - 证书按应用实际域名签发（单域名证书），不再声明泛域名
+    （CNAME 委派渠道例外：按根域名签发泛域名证书，见下）。
 
 - 应用内新增证书签发渠道会修改 traefik 静态配置，应用安装结束时提示重启 traefik；
 - 尚未安装 traefik 时应用安装会报错并要求先 `bash run.sh install traefik`；
 - Dashboard 在 ACME 模式下由所选证书签发渠道签发精确证书（可跳过：自签兜底），
   静态证书模式按 SNI 匹配；访问域名默认从根域名池推导。
+
+### 多账号：CNAME 委派
+
+Traefik 的 DNS-01 凭据是进程级环境变量，同一个 Traefik 实例内，
+同一 DNS 服务商只能配置一套账号凭据（官方说明：
+[traefik#5472](https://github.com/traefik/traefik/issues/5472)）。
+安装器采用官方推荐的 CNAME 委派方式支持多账号：
+
+- 每个服务商默认以首次配置的账号为**主账号**（也可显式切换，见下）；
+  凭据只写入一次 traefik 的 `.env`，同一账号下的多个根域名共用该凭据，
+  resolver 仍按 `<根域名>@<服务商>` 命名（根域名与账号是 N:1 关系）。
+- **显式指定主账号（不依赖添加顺序）**：
+  - 新增渠道时在账号选择菜单选 `3)`，把当前根域名的账号设为新主账号；
+  - 或执行 `bash run.sh configure traefik` → `4) 切换 DNS 服务商主账号`。
+  切换会覆盖 `.env` 凭据、更新锚点并重算所有渠道的 CNAME 目标；
+  需按提示更新 DNS，并用 `docker compose up -d --force-recreate` 重建容器。
+- 新增其他账号下的根域名时，安装器会提示在**另一个账号**的 DNS 中添加 CNAME：
+  `_acme-challenge.<根域名>` → `_acme-challenge.<根域名>.acme.<主账号锚点根域名>.`
+- 委派渠道会为该根域名签发泛域名证书 `*.<根域名>` + `<根域名>`
+  （DNS-01 支持通配符）。安装器会同时生成一个仅用于触发签发的动态路由，
+  渠道配置完成后即自动申请证书，无需先安装应用。根级 CNAME 只需配置一次，
+  覆盖根域名和一级子域名；应用域名必须是 `<根域名>` 或
+  `<单级子域>.<根域名>`。更深层级需为该完整域名单独配置 CNAME，或改用静态证书。
+- lego 会沿该 CNAME 到主账号区域创建/删除 TXT 验证记录，
+  因此 Traefik 不需要保存第二套 AK/SK。
+- 未委派的渠道仍按应用完整域名签发单域名证书，行为不变。
+- 委派关系以注释形式记录在 `traefik.toml` 的 resolver 段前，
+  `bash run.sh configure traefik` 的渠道列表会显示委派目标。
+- 不要设置 `LEGO_DISABLE_CNAME_SUPPORT=true`，否则 lego 不会跟随 CNAME。
+
+示例：`example.com`（主账号）与 `example.net`（另一账号）。
+在 `example.net` 的 DNS 中添加
+`_acme-challenge` CNAME `_acme-challenge.example.net.acme.example.com.`，
+之后安装器为 `example.net` 创建的 `example.net@aliyun` 渠道
+即可复用主账号凭据完成签发。
+
+如果 `example.net` 先配置、`example.com` 后配置，不需要清空重来：
+新增 `example.com` 时选择 `3) 将本根域名的账号设为主账号`，
+或在 `bash run.sh configure traefik` 中选择
+`4) 切换 DNS 服务商主账号`，安装器会自动重算两条渠道的 CNAME 目标。

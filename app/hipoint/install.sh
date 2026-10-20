@@ -125,14 +125,21 @@ while true; do
 done
 SELECTED_ROOT_DOMAIN="$ROOT_DOMAIN"
 APP_RESOLVER_DOMAIN="$ROOT_DOMAIN"
+CERT_MAIN=""
+CERT_SANS=""
 
 if [ "$CERT_MODE" = auto ]; then
     list_traefik_resolvers || { printf "ℹ️  尚无证书签发渠道，本次将引导新增。\n"; RESOLVER_POOL=(); }
     choose_or_add_resolver "$ROOT_DOMAIN" || exit 1
+    # CNAME 委派渠道：根级 CNAME 只覆盖根域名挑战，改用泛域名证书
+    # （hipoint 的微信/租户域名均为根域名下一级，泛域名可完整覆盖）
+    if [ -n "$APP_RESOLVER" ] && resolver_cname_target "$APP_RESOLVER" >/dev/null 2>&1; then
+        CERT_MAIN="*.${ROOT_DOMAIN}"
+        CERT_SANS="${ROOT_DOMAIN}"
+        printf "✅ 委派渠道将签发泛域名证书: %s（SAN: %s）\n" "$CERT_MAIN" "$CERT_SANS"
+    fi
 else
     APP_RESOLVER=""
-    CERT_MAIN=""
-    CERT_SANS=""
     printf "✅ 使用静态证书：请确认预置证书的 SAN 覆盖各服务域名。\n"
 fi
 
@@ -373,6 +380,9 @@ if [ "$NEEDS_HOSTGW" = 1 ] && ! grep -q 'host.docker.internal' "${TRAEFIK_HOME}/
     printf "⚠️  后端指向宿主机，但当前 traefik 容器未映射 host.docker.internal。\n"
     printf "   请为 %s/docker-compose.yml 补 extra_hosts: [\"host.docker.internal:host-gateway\"]\n" "$TRAEFIK_HOME"
     printf "   再执行: cd %s && docker compose up -d（重建 traefik，会短暂中断走它的站点）\n" "$TRAEFIK_HOME"
+elif [ "${PRIMARY_SWITCHED:-0}" = 1 ]; then
+    printf "⚠️  本次切换了 traefik 主账号（.env 凭据已变更），需重建容器生效：\n"
+    printf "   cd %s && docker compose up -d --force-recreate\n" "$TRAEFIK_HOME"
 elif [ "${RESOLVER_ADDED:-0}" = 1 ]; then
     printf "⚠️  本次新增了证书签发渠道（traefik 静态配置已变更），需重启 traefik 生效：\n"
     printf "   cd %s && docker compose restart\n" "$TRAEFIK_HOME"

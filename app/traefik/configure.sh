@@ -2,7 +2,7 @@
 
 # ================= app/traefik/configure.sh =================
 # traefik 运维脚本：管理证书来源
-# （新增 DNS resolver、静态证书，或切换 Let's Encrypt 生产/测试环境）。
+# （新增 DNS resolver、切换主账号、静态证书，或切换 Let's Encrypt 生产/测试环境）。
 # 证书签发渠道命名 <根域名>@<DNS服务商>（如 example.com@aliyun）；
 # 业务应用安装时可复用同一流程。
 # 入口：bash run.sh configure traefik
@@ -32,7 +32,12 @@ printf "🔧 Traefik: %s\n" "$TRAEFIK_HOME"
 if list_traefik_resolvers; then
     printf "🔐 证书签发渠道（自动签发）:\n"
     for entry in "${RESOLVER_POOL[@]}"; do
-        printf "   - %s（provider: %s）\n" "${entry%%|*}" "${entry##*|}"
+        cname=$(resolver_cname_target "${entry%%|*}" 2>/dev/null || true)
+        if [ -n "$cname" ]; then
+            printf "   - %s（provider: %s，CNAME 委派 → %s）\n" "${entry%%|*}" "${entry##*|}" "$cname"
+        else
+            printf "   - %s（provider: %s）\n" "${entry%%|*}" "${entry##*|}"
+        fi
     done
 else
     printf "🔐 证书签发渠道为空\n"
@@ -55,6 +60,16 @@ if [ "${RESOLVER_ADDED:-0}" = 1 ] || [ "${STATIC_ADDED:-0}" = 1 ] || [ "${CA_CHA
         "$([ "${RESOLVER_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')" \
         "$([ "${STATIC_ADDED:-0}" = 1 ] && printf '已增' || printf '无新增')" \
         "$([ "${CA_CHANGED:-0}" = 1 ] && printf '已切换' || printf '无变更')"
-    printf "⚠️  均为静态配置变更，需重启生效：cd %s && docker compose restart\n" "$TRAEFIK_HOME"
+    # 主账号切换会改写 .env，由下方提示重建容器（重建同样覆盖静态配置变更）
+    if [ "${PRIMARY_SWITCHED:-0}" != 1 ]; then
+        printf "⚠️  均为静态配置变更，需重启生效：cd %s && docker compose restart\n" "$TRAEFIK_HOME"
+    fi
+fi
+
+if [ "${PRIMARY_SWITCHED:-0}" = 1 ]; then
+    printf -- "----------------------------------------\n"
+    printf "✅ 主账号已切换。凭据变更需重建容器才会生效：\n"
+    printf "   cd %s && docker compose up -d --force-recreate\n" "$TRAEFIK_HOME"
+    printf "⚠️  请先按上面的提示完成各渠道的 CNAME 调整。\n"
 fi
 exit 0

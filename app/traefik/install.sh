@@ -30,7 +30,12 @@ if [ -n "$TRAEFIK_HOME" ] && [ -f "$TRAEFIK_HOME/traefik.toml" ]; then
     if list_traefik_resolvers; then
         printf "🔐 现有证书签发渠道:\n"
         for entry in "${RESOLVER_POOL[@]}"; do
-            printf "   - %s\n" "$entry"
+            cname=$(resolver_cname_target "${entry%%|*}" 2>/dev/null || true)
+            if [ -n "$cname" ]; then
+                printf "   - %s（CNAME 委派 → %s）\n" "$entry" "$cname"
+            else
+                printf "   - %s\n" "$entry"
+            fi
         done
     fi
     printf "==========================================\n"
@@ -57,6 +62,8 @@ if [ "$MODE" = reinstall ]; then
     SERVICE_NAME=$(basename "$SERVICE_DIR")
     # 清理旧声明式路由文件（历史方案遗留；域名声明现随应用 labels 下发）
     rm -f "$SERVICE_DIR"/config/acme-*.toml
+    # .env 会被重置，主账号锚点元数据一并清理，避免与新凭据不一致
+    rm -f "$SERVICE_DIR"/acme-providers.conf
 else
     init_service || exit 1
 fi
@@ -106,6 +113,8 @@ printf "🔐 请配置 Traefik Dashboard\n"
 printf "==========================================\n"
 choose_cert_source "Traefik Dashboard" || exit 1
 DASH_RESOLVER=""
+DASH_CERT_MAIN=""
+DASH_CERT_SANS=""
 if [ "$CERT_MODE" = auto ]; then
     choose_or_add_resolver "" allow_skip || exit 1
     DASH_RESOLVER="$APP_RESOLVER"
@@ -123,6 +132,19 @@ if [ -n "$DASH_RESOLVER" ] && [[ "$DASH_RESOLVER" == *@* ]]; then
 elif [ -n "$ROOT_DOMAINS" ]; then
     default_dash="traefik.${ROOT_DOMAINS%% *}"
 fi
+
+# CNAME 委派渠道：根级 CNAME 只覆盖 _acme-challenge.<根域名>，
+# Dashboard 也改用泛域名证书（*.root + root）
+if [ -n "$DASH_RESOLVER" ] && resolver_cname_target "$DASH_RESOLVER" >/dev/null 2>&1; then
+    if [ -n "$dash_root" ]; then
+        DASH_CERT_MAIN="*.${dash_root}"
+        DASH_CERT_SANS="${dash_root}"
+        printf "✅ 委派渠道将使用泛域名证书: %s（SAN: %s）\n" "$DASH_CERT_MAIN" "$DASH_CERT_SANS"
+    else
+        printf "⚠️  委派渠道无法推导根域名，Dashboard 证书可能签发失败。\n"
+    fi
+fi
+
 while true; do
     if [ -n "$default_dash" ]; then
         printf "请输入 Dashboard 访问域名（回车用默认）[%s]: " "$default_dash"
@@ -135,7 +157,12 @@ while true; do
         printf "❌ 无根域名可推导时 Dashboard 域名不能为空。\n"
         continue
     fi
-    validate_root_domain "$DASHBOARD_DOMAIN" && break
+    validate_root_domain "$DASHBOARD_DOMAIN" || continue
+    if [ -n "$DASH_CERT_MAIN" ] && ! app_domain_covered_by_wildcard "$DASHBOARD_DOMAIN" "$dash_root"; then
+        printf "❌ 委派渠道的泛域名证书只覆盖 %s 及一级子域名，请重新输入。\n" "$dash_root"
+        continue
+    fi
+    break
 done
 
 # 确保 htpasswd 可用（缺失时经包管理器自动安装，覆盖主流发行版）；
@@ -176,6 +203,16 @@ else
     else
         printf "✅ Traefik Dashboard 认证配置已写入（未绑定证书签发渠道，暂用自签证书）！\n"
     fi
+fi
+
+# 委派渠道：为 Dashboard 路由声明泛域名，触发通配证书签发
+if [ -n "$DASH_CERT_MAIN" ]; then
+    cat >> "$DASHBOARD_CONFIG_FILE" <<EOF
+
+[[http.routers.dashboard.tls.domains]]
+  main = "${DASH_CERT_MAIN}"
+  sans = ["${DASH_CERT_SANS}"]
+EOF
 fi
 
 
