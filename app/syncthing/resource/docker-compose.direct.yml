@@ -1,0 +1,25 @@
+services:
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: syncthing
+    hostname: my-syncthing
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      # 直接访问模式下同样监听 0.0.0.0，端口由宿主机映射发布
+      - STGUIADDRESS=0.0.0.0:8384
+    volumes:
+      # 配置与默认同步目录（容器内 /var/syncthing）
+      - ./data:/var/syncthing
+    # GUI 直接映射到宿主机；同步与局域网发现端口保持发布
+    ports:
+      - "${SYNCTHING_PORT}:8384"
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      - "21027:21027/udp"
+    healthcheck:
+      test: curl -fkLsS -m 2 127.0.0.1:8384/rest/noauth/health | grep -o --color=never OK || exit 1
+      interval: 1m
+      timeout: 10s
+      retries: 3

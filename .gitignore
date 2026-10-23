@@ -1,0 +1,4 @@
+.idea/
+
+# install.sh 首次运行时生成的服务根目录配置
+.installer.conf

@@ -1,0 +1,63 @@
+name: zentao
+services:
+  zentao:
+    image: hub.zentao.net/app/zentao:latest
+    container_name: zentao
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      - MYSQL_INTERNAL=false
+      - ZT_MYSQL_HOST=zentao-mysql
+      - ZT_MYSQL_PORT=3306
+      - ZT_MYSQL_USER=root
+      - ZT_MYSQL_DB=zentao
+      - PHP_MAX_EXECUTION_TIME=300
+      - PHP_POST_MAX_SIZE=50M
+      - PHP_UPLOAD_MAX_FILESIZE=50M
+      - ZT_MYSQL_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    depends_on:
+      zentao-mysql:
+        condition: service_healthy
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.zentao.rule=Host(`${ZENTAO_HOST}`)"
+      - "traefik.http.routers.zentao.entrypoints=websecure"
+      - "traefik.http.routers.zentao.tls=true"
+      # 证书解析器由 .env 的 ZENTAO_RESOLVER 提供（traefik resolver 池）
+      - "traefik.http.routers.zentao.tls.certResolver=${ZENTAO_RESOLVER}"
+      # 应用直接按 rule 域名签发证书，两项留空即可
+      - "traefik.http.routers.zentao.tls.domains[0].main=${ZENTAO_CERT_MAIN}"
+      - "traefik.http.routers.zentao.tls.domains[0].sans=${ZENTAO_CERT_SANS}"
+      - "traefik.http.routers.zentao.service=zentao-svc"
+      - "traefik.http.services.zentao-svc.loadbalancer.server.port=80"
+
+  zentao-mysql:
+    image: mysql:5.7
+    container_name: zentao-mysql57
+    restart: unless-stopped
+    volumes:
+      - ./db:/var/lib/mysql
+    command:
+      - --max_allowed_packet=64M       # 增大允许的数据包大小
+      - --net_write_timeout=600        # 增大写入超时时间 (秒)
+      - --wait_timeout=28800           # 增大空闲连接超时时间
+      - --interactive_timeout=28800    # 增大交互式连接超时时间
+      - --character-set-server=utf8mb4 # 数据库支持中文
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+networks:
+  web:
+    external: true

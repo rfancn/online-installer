@@ -1,0 +1,4 @@
+# 统一换行符为 LF：
+#   text=auto —— 自动识别文本文件，入库时归一化为 LF，二进制文件（如 bin/mkcert）不转换
+#   eol=lf    —— 检出时强制 LF，防止 Windows 用户 checkout 出 CRLF 导致脚本无法执行
+* text=auto eol=lf
