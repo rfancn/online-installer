@@ -1,0 +1,17 @@
+# 默认配置参考: https://github.com/rfancn/notify-bridge/blob/main/config.toml.example
+
+[sdk.log]
+    level = "info"
+    filename = "notify-bridge.log"
+    dir = "logs"
+    [sdk.log.rotate]
+        max_age = 168
+        max_backup = 5
+        max_size = 100
+
+[app]
+    # 服务监听地址，可被 --app-address 覆盖
+    listen = ":8080"
+    # 必填：禅道 webhook 请求必须携带的共享密钥
+    # 支持 Authorization: Bearer <token> 或 X-Webhook-Token: <token>
+    token = "__TOKEN__"

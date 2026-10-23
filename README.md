@@ -12,6 +12,8 @@ bash run.sh list                  # 列出可用服务及其支持的动作
 bash run.sh install               # 安装：交互选择服务（app/<名>/install.sh）
 bash run.sh install traefik       # 直接安装 app/traefik
 bash run.sh install airpress      # 直接安装 app/airpress
+bash run.sh install notify-bridge # 直接安装 app/notify-bridge
+bash run.sh install zentao        # 直接安装 app/zentao
 bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/静态证书/CA 环境）
 ```
 
@@ -22,7 +24,7 @@ bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/�
 
 ## 部署方式
 
-容器类应用（filebrowser、airpress、syncthing）安装时先选择部署方式：
+容器类应用（filebrowser、airpress、syncthing、notify-bridge、zentao）安装时先选择部署方式：
 
 - **反向代理（默认）**：应用加入共享 `web` 网络，经 Traefik 按安装时指定的
   完整域名访问，证书由 Traefik 按应用 labels 自动签发；
@@ -30,7 +32,7 @@ bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/�
   `http://<本机IP>:<端口>` 访问；不依赖 Traefik，也无需预先安装它。
 
 各应用直接访问的默认端口：filebrowser `8080`、airpress `8080`、
-syncthing `8384`。
+syncthing `8384`、notify-bridge `8080`、zentao `8080`。
 
 hipoint 本身是纯 Traefik 路由配置（不运行自己的容器），仅支持反向代理模式。
 

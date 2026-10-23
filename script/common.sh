@@ -20,6 +20,60 @@ ask() {
     fi
 }
 
+# 读取必填输入，结果写入指定变量
+read_required() {
+    local prompt="$1" var_name="$2" value
+    while true; do
+        printf "%s" "$prompt" >&2
+        read -r value || { printf "\n❌ 输入已结束，已中止。\n" >&2; return 1; }
+        [ -n "$value" ] && break
+        printf "❌ 该项不能为空，请重新输入。\n" >&2
+    done
+    printf -v "$var_name" '%s' "$value"
+}
+
+# 读取带默认值的输入（回车使用默认值），结果写入指定变量
+read_default() {
+    local prompt="$1" default="$2" var_name="$3" value
+    while true; do
+        printf "%s [%s]: " "$prompt" "$default"
+        read -r value || { printf "\n❌ 输入已结束，已中止。\n" >&2; return 1; }
+        value="${value:-$default}"
+        [ -n "$value" ] && break
+        printf "❌ 该项不能为空，请重新输入。\n" >&2
+    done
+    printf -v "$var_name" '%s' "$value"
+}
+
+# 读取敏感输入（不回显），结果写入指定变量
+read_secret() {
+    local prompt="$1" var_name="$2" value
+    while true; do
+        printf "%s" "$prompt" >&2
+        stty -echo
+        read -r value || { stty echo; printf "\n❌ 输入已结束，已中止。\n" >&2; return 1; }
+        stty echo
+        printf "\n" >&2
+        [ -n "$value" ] && break
+        printf "❌ 该项不能为空，请重新输入。\n" >&2
+    done
+    printf -v "$var_name" '%s' "$value"
+}
+
+# 单选：当前来源/目标均只有一个选项，保留选择步骤便于后续扩展
+choose_option() {
+    local title="$1" option="$2" var_name="$3" choice
+    while true; do
+        printf "%s\n  1) %s\n" "$title" "$option" >&2
+        printf "请输入序号 [1]: " >&2
+        read -r choice || { printf "\n❌ 输入已结束，已中止。\n" >&2; return 1; }
+        choice="${choice:-1}"
+        [ "$choice" = "1" ] && break
+        printf "❌ 无效选择 '%s'。\n" "$choice" >&2
+    done
+    printf -v "$var_name" '%s' "$option"
+}
+
 # 0. 解析服务根目录：首次运行交互确认并写入 .installer.conf，后续自动复用
 resolve_service_base() {
     # 已有记录则直接复用，不再询问

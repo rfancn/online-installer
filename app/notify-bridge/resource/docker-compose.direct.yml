@@ -1,0 +1,10 @@
+services:
+  notify-bridge:
+    image: rfancn/notify-bridge:latest
+    container_name: notify-bridge
+    restart: unless-stopped
+    ports:
+      - "${NOTIFY_BRIDGE_PORT}:8080"
+    volumes:
+      # 配置只读挂载，与官方 docker run 示例一致
+      - ./config.toml:/app/config.toml:ro
