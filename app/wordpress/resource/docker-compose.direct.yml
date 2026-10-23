@@ -1,0 +1,47 @@
+services:
+  wordpress:
+    image: wordpress:latest
+    container_name: wordpress
+    restart: unless-stopped
+    environment:
+      # 数据库连接信息统一来自 .env
+      - WORDPRESS_DB_HOST=${MYSQL_HOST}:${MYSQL_PORT}
+      - WORDPRESS_DB_USER=${MYSQL_USER}
+      - WORDPRESS_DB_PASSWORD=${MYSQL_PASSWORD}
+      - WORDPRESS_DB_NAME=${MYSQL_DATABASE}
+    volumes:
+      # 站点文件（主题、插件、上传内容）持久化到宿主机
+      - ./data:/var/www/html
+    # 直接访问模式：HTTP 端口映射到宿主机，不经过 Traefik
+    ports:
+      - "${WORDPRESS_PORT}:80"
+    depends_on:
+      wordpress-mysql:
+        condition: service_healthy
+
+  wordpress-mysql:
+    # 官方 MySQL Community 镜像
+    image: mysql:8.0
+    container_name: ${MYSQL_HOST}
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_allowed_packet=64M
+      - --net_write_timeout=600
+      - --wait_timeout=600
+      - --interactive_timeout=600
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    volumes:
+      - ./db:/var/lib/mysql
+    healthcheck:
+      # 初始化阶段 MySQL 关闭 TCP，只有就绪后 127.0.0.1 才能连通
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
