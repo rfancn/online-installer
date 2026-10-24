@@ -134,6 +134,7 @@ else
     sed -i "s|^\(AIRPRESS_CERT_SANS=\).*|\1$(sed_escape "$CERT_SANS")|" "$TARGET_ENV_FILE"
     sed -i '/^AIRPRESS_PORT=/d' "$TARGET_ENV_FILE"
 fi
+strip_empty_cert_domain_labels "$COMPOSE_FILE"
 
 
 # 3. 选择数据库类型

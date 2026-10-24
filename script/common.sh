@@ -430,6 +430,20 @@ resolver_cname_target() {
     return 1
 }
 
+# 系统中是否已签发指定根域名的泛域名证书
+# 依据: 各渠道独立存储于 letsencrypt/acme-<resolver>.json，
+#       证书域名在 JSON 中以 "*.根域名" 字面量出现
+# 参数: $1=根域名
+root_has_wildcard_cert() {
+    local root="$1" file
+    [ -n "${TRAEFIK_HOME:-}" ] && [ -n "$root" ] || return 1
+    for file in "${TRAEFIK_HOME}"/letsencrypt/acme-*.json; do
+        [ -f "$file" ] || continue
+        grep -Fq "\"*.${root}\"" "$file" && return 0
+    done
+    return 1
+}
+
 # lego 提供商标识 → 该服务商需要的环境变量名（每行一个）
 dns_provider_env_names() {
     case "$1" in
@@ -1466,6 +1480,7 @@ choose_app_domain() {
 # 证书签发渠道（无匹配时询问是否新增）
 # 结果: APP_HOST / CERT_MAIN / CERT_SANS / APP_RESOLVER_DOMAIN /
 #       APP_RESOLVER / RESOLVER_ADDED
+#       （非委派渠道下，该根域名已有泛域名证书时提示是否复用，结果写入 CERT_MAIN/SANS）
 setup_app_certificate() {
     if [ -z "$TRAEFIK_HOME" ] || [ ! -f "$TRAEFIK_HOME/traefik.toml" ]; then
         printf "❌ 尚未安装 traefik（%s 中无 TRAEFIK_HOME 或未找到其配置）。\n" "$INSTALLER_CONF"
@@ -1479,7 +1494,8 @@ setup_app_certificate() {
     choose_app_domain || return 1
 
     if [ "$CERT_MODE" = static ]; then
-        # 静态路线：不绑签发渠道、不下发域名声明；labels 空值被 Traefik 忽略，
+        # 静态路线：不绑签发渠道、不下发域名声明；空的 tls.domains 标签由
+        # strip_empty_cert_domain_labels 删除（否则 ACME 会报 no domain was given），
         # TLS 握手按 SNI 命中 [[tls.certificates]] 预置证书
         APP_RESOLVER=""
         CERT_MAIN=""
@@ -1502,7 +1518,71 @@ setup_app_certificate() {
         CERT_MAIN="*.${SELECTED_ROOT_DOMAIN}"
         CERT_SANS="${SELECTED_ROOT_DOMAIN}"
         printf "✅ 委派渠道将签发泛域名证书: %s（SAN: %s）\n" "$CERT_MAIN" "$CERT_SANS"
+    else
+        # 非委派渠道：由用户选择精确域名证书或泛域名证书
+        choose_cert_domain_mode "$APP_HOST" "$SELECTED_ROOT_DOMAIN" || return 1
     fi
+    return 0
+}
+
+# 精确域名/静态证书模式下删除空的 tls.domains 标签。
+# Traefik 只要存在 tls.domains 条目就会使用它，不会回退到 router 的 Host()
+# 规则；main 为空时 ACME 会报 "no domain was given"。
+# 参数: $1=compose 文件；依据全局 CERT_MAIN / CERT_SANS 决定是否删除
+strip_empty_cert_domain_labels() {
+    local compose_file="$1"
+    [ -f "$compose_file" ] || return 0
+    [ -n "${CERT_MAIN:-}" ] || sed -i '/\.tls\.domains\[0\]\.main=/d' "$compose_file"
+    [ -n "${CERT_SANS:-}" ] || sed -i '/\.tls\.domains\[0\]\.sans=/d' "$compose_file"
+    return 0
+}
+
+# 选择证书域名模式（精确域名 / 泛域名）
+# 已有该根域名的泛域名证书时，提示是否复用；否则提示精确/泛域名二选一。
+# 参数: $1=用于覆盖校验的域名 $2=根域名 $3=精确模式提示文案（可选）
+# 结果: CERT_MAIN / CERT_SANS（空=精确域名；*.根域名 + 根域名=泛域名）
+choose_cert_domain_mode() {
+    local host="$1" root="$2" exact_label="${3:-$1}" choice
+    CERT_MAIN=""
+    CERT_SANS=""
+
+    # 泛域名只覆盖根域名及其一级子域；不覆盖时不提供无效选项
+    if ! app_domain_covered_by_wildcard "$host" "$root"; then
+        printf "ℹ️  %s 超过 *.%s 的覆盖范围，将使用精确域名证书。\n" "$host" "$root"
+        return 0
+    fi
+
+    if root_has_wildcard_cert "$root"; then
+        printf "==========================================\n"
+        printf "🗂️  检测到根域名 %s 已有泛域名证书\n" "$root"
+        printf "==========================================\n"
+        printf "  1) 使用泛域名证书    (*.%s)\n" "$root"
+        printf "  2) 使用精确域名证书  (%s)\n" "$exact_label"
+        printf "请选择 (1/2) [2]: "
+        read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+        case "${choice:-2}" in
+            1) : ;;
+            2) printf "✅ 将使用精确域名证书: %s\n" "$exact_label"; return 0 ;;
+            *) printf "❌ 无效输入 '%s'，请输入 1 或 2。\n" "$choice"; return 1 ;;
+        esac
+    else
+        printf "==========================================\n"
+        printf "📜 请选择证书申请方式\n"
+        printf "==========================================\n"
+        printf "  1) 自动申请精确域名证书 (%s)\n" "$exact_label"
+        printf "  2) 自动申请泛域名证书   (*.%s)\n" "$root"
+        printf "请选择 (1/2) [1]: "
+        read -r choice || { printf "\n❌ 输入已结束（EOF），已中止。\n" >&2; return 1; }
+        case "${choice:-1}" in
+            1) printf "✅ 将申请精确域名证书: %s\n" "$exact_label"; return 0 ;;
+            2) : ;;
+            *) printf "❌ 无效输入 '%s'，请输入 1 或 2。\n" "$choice"; return 1 ;;
+        esac
+    fi
+
+    CERT_MAIN="*.${root}"
+    CERT_SANS="${root}"
+    printf "✅ 将使用泛域名证书: %s（SAN: %s）\n" "$CERT_MAIN" "$CERT_SANS"
     return 0
 }
 

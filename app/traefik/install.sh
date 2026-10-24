@@ -165,6 +165,13 @@ while true; do
     break
 done
 
+# 非委派渠道：由用户选择精确域名证书或泛域名证书
+if [ -z "$DASH_CERT_MAIN" ] && [ -n "$DASH_RESOLVER" ] && [ -n "$dash_root" ]; then
+    choose_cert_domain_mode "$DASHBOARD_DOMAIN" "$dash_root" || exit 1
+    DASH_CERT_MAIN="$CERT_MAIN"
+    DASH_CERT_SANS="$CERT_SANS"
+fi
+
 # 确保 htpasswd 可用（缺失时经包管理器自动安装，覆盖主流发行版）；
 # 安装失败必须中止，否则空哈希会静默写进 dashboard 认证配置
 ensure_htpasswd || {

@@ -14,6 +14,7 @@ bash run.sh install traefik       # 直接安装 app/traefik
 bash run.sh install airpress      # 直接安装 app/airpress
 bash run.sh install notify-bridge # 直接安装 app/notify-bridge
 bash run.sh install zentao        # 直接安装 app/zentao
+bash run.sh install wordpress     # 直接安装 app/wordpress
 bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/静态证书/CA 环境）
 ```
 
@@ -24,7 +25,7 @@ bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/�
 
 ## 部署方式
 
-容器类应用（filebrowser、airpress、syncthing、notify-bridge、zentao）安装时先选择部署方式：
+容器类应用（filebrowser、airpress、syncthing、notify-bridge、zentao、wordpress）安装时先选择部署方式：
 
 - **反向代理（默认）**：应用加入共享 `web` 网络，经 Traefik 按安装时指定的
   完整域名访问，证书由 Traefik 按应用 labels 自动签发；
@@ -32,7 +33,10 @@ bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/�
   `http://<本机IP>:<端口>` 访问；不依赖 Traefik，也无需预先安装它。
 
 各应用直接访问的默认端口：filebrowser `8080`、airpress `8080`、
-syncthing `8384`、notify-bridge `8080`、zentao `8080`。
+syncthing `8384`、notify-bridge `8080`、zentao `8080`、wordpress `8080`。
+
+wordpress 使用官方 `wordpress:latest` 镜像，数据库二选一：随服务启动的
+MySQL Community 容器（`mysql:8.0`），或连接已有外部 MySQL。
 
 hipoint 本身是纯 Traefik 路由配置（不运行自己的容器），仅支持反向代理模式。
 
@@ -65,7 +69,9 @@ ACME 统一走 **DNS-01**，证书签发渠道池只包含 DNS-01 渠道。两�
   `[[tls.certificates]]`（按 SNI 匹配，id=证书首个域名，同 id 重加即覆盖续期）。
   注意：与证书签发渠道同属**静态配置，变更后需重启 traefik**；静态证书不会自动续签，
   到期前重跑该流程替换即可。应用安装时证书方式选"静态证书"，则
-  Traefik 的 `certResolver`/通配声明置空（labels 空值被忽略），握手命中预置证书。
+  Traefik 的 `certResolver`/通配声明置空；安装器会删除空的 `tls.domains`
+  标签（空的 main 会让 Traefik 报 `no domain was given`，且不会回退到
+  `Host()` 规则），握手按 SNI 命中预置证书。
 
 - **域名声明（动态，随应用走）**：业务应用（airpress、filebrowser 等）安装时
   直接输入应用完整域名，写入应用自己的 compose labels，启动即自动触发签发
@@ -75,8 +81,12 @@ ACME 统一走 **DNS-01**，证书签发渠道池只包含 DNS-01 渠道。两�
     询问确认，默认取最后两段；
   - 按根域名匹配证书签发渠道（如 `example.com@aliyun`）；找不到匹配渠道时
     询问是否新增；
-  - 证书按应用实际域名签发（单域名证书），不再声明泛域名
-    （CNAME 委派渠道例外：按根域名签发泛域名证书，见下）。
+  - 证书默认按应用实际域名签发（单域名证书）；以下两种情况改用泛域名：
+    CNAME 委派渠道（见下）；非委派渠道下，安装器会读取
+    `letsencrypt/acme-*.json` 判断该根域名是否已有泛域名证书——已有则提示
+    是否复用（默认精确域名），没有则提示选择自动申请精确域名或泛域名
+    （默认精确域名）。注意：Traefik 握手时会在全局 TLS store 中复用已覆盖该域名的
+    证书，因此"精确域名"只影响本应用的证书域名声明，不会强制另签一张精确证书。
 
 - 应用内新增证书签发渠道会修改 traefik 静态配置，应用安装结束时提示重启 traefik；
 - 尚未安装 traefik 时应用安装会报错并要求先 `bash run.sh install traefik`；

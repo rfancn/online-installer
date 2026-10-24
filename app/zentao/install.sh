@@ -96,6 +96,7 @@ else
     sed -i "s|__ZENTAO_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
     sed -i '/^ZENTAO_PORT=/d' "$TARGET_ENV_FILE"
 fi
+strip_empty_cert_domain_labels "$COMPOSE_FILE"
 sed -i "s|__MYSQL_ROOT_PASSWORD__|$(sed_escape "$MYSQL_ROOT_PASSWORD")|g" "$TARGET_ENV_FILE"
 
 # .env 含数据库密码，仅允许当前用户读写

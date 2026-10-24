@@ -1,0 +1,65 @@
+services:
+  wordpress:
+    image: wordpress:latest
+    container_name: wordpress
+    restart: unless-stopped
+    environment:
+      # 数据库连接信息统一来自 .env
+      - WORDPRESS_DB_HOST=${MYSQL_HOST}:${MYSQL_PORT}
+      - WORDPRESS_DB_USER=${MYSQL_USER}
+      - WORDPRESS_DB_PASSWORD=${MYSQL_PASSWORD}
+      - WORDPRESS_DB_NAME=${MYSQL_DATABASE}
+    volumes:
+      # 站点文件（主题、插件、上传内容）持久化到宿主机
+      - ./data:/var/www/html
+    depends_on:
+      wordpress-mysql:
+        condition: service_healthy
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.wordpress.rule=Host(`${WORDPRESS_HOST}`)"
+      - "traefik.http.routers.wordpress.entrypoints=websecure"
+      - "traefik.http.routers.wordpress.tls=true"
+      # 证书解析器由 .env 的 WORDPRESS_RESOLVER 提供（traefik resolver 池）
+      - "traefik.http.routers.wordpress.tls.certResolver=${WORDPRESS_RESOLVER}"
+      # 通配证书声明：委派渠道或根域名已有泛域名证书时 main=*.根域名 sans=根域名；
+      # 精确域名模式由 install.sh 删除这两行，Traefik 按 Host() 规则自动签发
+      - "traefik.http.routers.wordpress.tls.domains[0].main=${WORDPRESS_CERT_MAIN}"
+      - "traefik.http.routers.wordpress.tls.domains[0].sans=${WORDPRESS_CERT_SANS}"
+      - "traefik.http.routers.wordpress.service=wordpress-svc"
+      - "traefik.http.services.wordpress-svc.loadbalancer.server.port=80"
+
+  wordpress-mysql:
+    # 官方 MySQL Community 镜像
+    image: mysql:8.0
+    container_name: ${MYSQL_HOST}
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_allowed_packet=64M
+      - --net_write_timeout=600
+      - --wait_timeout=600
+      - --interactive_timeout=600
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    volumes:
+      - ./db:/var/lib/mysql
+    networks:
+      - web
+    healthcheck:
+      # 初始化阶段 MySQL 关闭 TCP，只有就绪后 127.0.0.1 才能连通
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+networks:
+  web:
+    external: true
