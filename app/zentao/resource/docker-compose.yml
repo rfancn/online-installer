@@ -28,7 +28,7 @@ services:
       - "traefik.http.routers.zentao.tls=true"
       # 证书解析器由 .env 的 ZENTAO_RESOLVER 提供（traefik resolver 池）
       - "traefik.http.routers.zentao.tls.certResolver=${ZENTAO_RESOLVER}"
-      # 应用直接按 rule 域名签发证书，两项留空即可
+      # 精确域名模式下由 install.sh 删除这两行，Traefik 按 rule 域名自动签发
       - "traefik.http.routers.zentao.tls.domains[0].main=${ZENTAO_CERT_MAIN}"
       - "traefik.http.routers.zentao.tls.domains[0].sans=${ZENTAO_CERT_SANS}"
       - "traefik.http.routers.zentao.service=zentao-svc"

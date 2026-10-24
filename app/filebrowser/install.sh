@@ -55,6 +55,7 @@ else
     sed -i "s|__FILEBROWSER_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
     sed -i '/^FILEBROWSER_PORT=/d' "$TARGET_ENV_FILE"
 fi
+strip_empty_cert_domain_labels "$COMPOSE_FILE"
 
 
 # 5. 放行直接访问端口（反向代理模式由 Traefik 的 80/443 入口承接）

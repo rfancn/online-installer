@@ -15,7 +15,7 @@ services:
       - "traefik.http.routers.notify-bridge.tls=true"
       # 证书解析器由 .env 的 NOTIFY_BRIDGE_RESOLVER 提供（traefik resolver 池）
       - "traefik.http.routers.notify-bridge.tls.certResolver=${NOTIFY_BRIDGE_RESOLVER}"
-      # 应用直接按 rule 域名签发证书，两项留空即可
+      # 精确域名模式下由 install.sh 删除这两行，Traefik 按 rule 域名自动签发
       - "traefik.http.routers.notify-bridge.tls.domains[0].main=${NOTIFY_BRIDGE_CERT_MAIN}"
       - "traefik.http.routers.notify-bridge.tls.domains[0].sans=${NOTIFY_BRIDGE_CERT_SANS}"
       - "traefik.http.routers.notify-bridge.service=notify-bridge-svc"

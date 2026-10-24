@@ -137,6 +137,9 @@ if [ "$CERT_MODE" = auto ]; then
         CERT_MAIN="*.${ROOT_DOMAIN}"
         CERT_SANS="${ROOT_DOMAIN}"
         printf "✅ 委派渠道将签发泛域名证书: %s（SAN: %s）\n" "$CERT_MAIN" "$CERT_SANS"
+    else
+        # 非委派渠道：由用户选择精确域名证书或泛域名证书
+        choose_cert_domain_mode "$ROOT_DOMAIN" "$ROOT_DOMAIN" "各服务域名分别申请" || exit 1
     fi
 else
     APP_RESOLVER=""

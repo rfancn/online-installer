@@ -173,6 +173,7 @@ else
     sed -i "s|^\(WORDPRESS_CERT_SANS=\).*|\1$(sed_escape "$CERT_SANS")|" "$TARGET_ENV_FILE"
     sed -i '/^WORDPRESS_PORT=/d' "$TARGET_ENV_FILE"
 fi
+strip_empty_cert_domain_labels "$COMPOSE_FILE"
 
 sed -i "s|^\(MYSQL_HOST=\).*|\1$(sed_escape "$MYSQL_HOST")|" "$TARGET_ENV_FILE"
 sed -i "s|^\(MYSQL_PORT=\).*|\1$(sed_escape "$MYSQL_PORT")|" "$TARGET_ENV_FILE"

@@ -51,6 +51,7 @@ else
     sed -i "s|__SYNCTHING_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
     sed -i '/^SYNCTHING_PORT=/d' "$TARGET_ENV_FILE"
 fi
+strip_empty_cert_domain_labels "$COMPOSE_FILE"
 
 
 # 5. 放行访问端口，以及同步与局域网发现端口

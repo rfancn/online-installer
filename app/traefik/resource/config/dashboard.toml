@@ -2,8 +2,10 @@
 # 占位符 __XXX__ 由 install.sh 替换
 
 # 定义 HTTP 路由规则
+# Dashboard 页面在 /dashboard/ 下，前端数据请求走 /api/*；
+# 直接按域名整体路由到 api@internal，无需再按路径匹配。
 [http.routers.dashboard]
-  rule = "Host(`__DASH_BOARD_DOMAIN__`) && (PathPrefix(`/dashboard`) || PathPrefix(`/api`))"
+  rule = "Host(`__DASH_BOARD_DOMAIN__`)"
   entryPoints = ["websecure"]
   service = "api@internal"
   middlewares = ["traefik-dashboard-auth"]

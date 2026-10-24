@@ -24,8 +24,8 @@ services:
       - "traefik.http.routers.wordpress.tls=true"
       # 证书解析器由 .env 的 WORDPRESS_RESOLVER 提供（traefik resolver 池）
       - "traefik.http.routers.wordpress.tls.certResolver=${WORDPRESS_RESOLVER}"
-      # 通配证书声明：委派渠道下 main=*.根域名 sans=根域名；
-      # 精确域名模式两项留空即可
+      # 通配证书声明：委派渠道或根域名已有泛域名证书时 main=*.根域名 sans=根域名；
+      # 精确域名模式由 install.sh 删除这两行，Traefik 按 Host() 规则自动签发
       - "traefik.http.routers.wordpress.tls.domains[0].main=${WORDPRESS_CERT_MAIN}"
       - "traefik.http.routers.wordpress.tls.domains[0].sans=${WORDPRESS_CERT_SANS}"
       - "traefik.http.routers.wordpress.service=wordpress-svc"

@@ -138,6 +138,7 @@ else
     sed -i "s|__NOTIFY_BRIDGE_CERT_SANS__|$(sed_escape "$CERT_SANS")|g" "$TARGET_ENV_FILE"
     sed -i '/^NOTIFY_BRIDGE_PORT=/d' "$TARGET_ENV_FILE"
 fi
+strip_empty_cert_domain_labels "$COMPOSE_FILE"
 
 # 配置中包含账号密码与 token，仅允许当前用户读写
 chmod 600 "$CONFIG_FILE"
