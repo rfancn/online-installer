@@ -1,0 +1,37 @@
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: unless-stopped
+    shm_size: '256m'
+    hostname: '${GITLAB_HOST}'
+    # 直接访问模式：宿主机端口映射到容器内 HTTP 80，不经过 Traefik
+    ports:
+      - "${GITLAB_PORT}:80"
+    environment:
+      TZ: 'Asia/Shanghai'
+      GITLAB_OMNIBUS_CONFIG: |
+        # 直接访问模式：使用宿主机地址与端口生成外部访问地址
+        external_url '${GITLAB_EXTERNAL_URL}'
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+
+        # 禁用容器内 SSH（与 offline 版本保持一致）
+        sshd['enable'] = false
+        gitlab_rails['gitlab_shell_ssh_port'] = nil
+
+        # 针对低配服务器的优化
+        puma['worker_processes'] = 2
+        sidekiq['concurrency'] = 10
+    # GitLab 需要较高的文件描述符与进程数上限；此处只限制容器，不改宿主机
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+      nproc:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - ./config:/etc/gitlab
+      - ./logs:/var/log/gitlab
+      - ./data:/var/opt/gitlab

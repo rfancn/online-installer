@@ -1,0 +1,52 @@
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: unless-stopped
+    shm_size: '256m'
+    hostname: '${GITLAB_HOST}'
+    networks:
+      - web
+    environment:
+      TZ: 'Asia/Shanghai'
+      GITLAB_OMNIBUS_CONFIG: |
+        # 反向代理模式：TLS 由 Traefik 终止，容器内只监听 HTTP 80
+        external_url '${GITLAB_EXTERNAL_URL}'
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+
+        # 禁用容器内 SSH（与 offline 版本保持一致）
+        sshd['enable'] = false
+        gitlab_rails['gitlab_shell_ssh_port'] = nil
+
+        # 针对低配服务器的优化
+        puma['worker_processes'] = 2
+        sidekiq['concurrency'] = 10
+    # GitLab 需要较高的文件描述符与进程数上限；此处只限制容器，不改宿主机
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+      nproc:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - ./config:/etc/gitlab
+      - ./logs:/var/log/gitlab
+      - ./data:/var/opt/gitlab
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.gitlab.rule=Host(`${GITLAB_HOST}`)"
+      - "traefik.http.routers.gitlab.entrypoints=websecure"
+      - "traefik.http.routers.gitlab.tls=true"
+      # 证书解析器由 .env 的 GITLAB_RESOLVER 提供（traefik resolver 池）
+      - "traefik.http.routers.gitlab.tls.certResolver=${GITLAB_RESOLVER}"
+      # 精确域名模式下由 install.sh 删除这两行，Traefik 按 rule 域名自动签发
+      - "traefik.http.routers.gitlab.tls.domains[0].main=${GITLAB_CERT_MAIN}"
+      - "traefik.http.routers.gitlab.tls.domains[0].sans=${GITLAB_CERT_SANS}"
+      - "traefik.http.routers.gitlab.service=gitlab-svc"
+      - "traefik.http.services.gitlab-svc.loadbalancer.server.port=80"
+
+networks:
+  web:
+    external: true

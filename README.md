@@ -15,6 +15,7 @@ bash run.sh install airpress      # 直接安装 app/airpress
 bash run.sh install notify-bridge # 直接安装 app/notify-bridge
 bash run.sh install zentao        # 直接安装 app/zentao
 bash run.sh install wordpress     # 直接安装 app/wordpress
+bash run.sh install gitlab        # 直接安装 app/gitlab
 bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/静态证书/CA 环境）
 ```
 
@@ -25,7 +26,7 @@ bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/�
 
 ## 部署方式
 
-容器类应用（filebrowser、airpress、syncthing、notify-bridge、zentao、wordpress）安装时先选择部署方式：
+容器类应用（filebrowser、airpress、syncthing、notify-bridge、zentao、wordpress、gitlab）安装时先选择部署方式：
 
 - **反向代理（默认）**：应用加入共享 `web` 网络，经 Traefik 按安装时指定的
   完整域名访问，证书由 Traefik 按应用 labels 自动签发；
@@ -33,10 +34,17 @@ bash run.sh configure traefik     # 配置维护：证书来源（签发渠道/�
   `http://<本机IP>:<端口>` 访问；不依赖 Traefik，也无需预先安装它。
 
 各应用直接访问的默认端口：filebrowser `8080`、airpress `8080`、
-syncthing `8384`、notify-bridge `8080`、zentao `8080`、wordpress `8080`。
+syncthing `8384`、notify-bridge `8080`、zentao `8080`、wordpress `8080`、
+gitlab `8929`。
 
 wordpress 使用官方 `wordpress:latest` 镜像，数据库二选一：随服务启动的
 MySQL Community 容器（`mysql:8.0`），或连接已有外部 MySQL。
+
+gitlab 使用官方 `gitlab/gitlab-ce:latest` 镜像。反向代理模式下容器内只监听
+HTTP 80，由 Traefik 终止 TLS；直接访问模式需输入外部访问主机地址（默认本机
+首个 IP）与端口，用于生成 `external_url`。容器内 SSH 已禁用（与 offline 版本
+一致），资源上限仅通过容器 ulimits 设置，不修改宿主机配置。首次启动需要数分钟，
+初始 root 密码见服务目录下的 `config/initial_root_password`。
 
 hipoint 本身是纯 Traefik 路由配置（不运行自己的容器），仅支持反向代理模式。
 
